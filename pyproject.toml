@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "p24grasp"
+version = "0.2.0"
+description = "P24 prosthetic hand grasp: MuJoCo simulation, geometric/PyRoki IK, RL policies, desktop and web viewers"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "scipy",
+    "mujoco>=3.12.0",
+    "matplotlib",
+    "pillow",
+]
+
+[project.optional-dependencies]
+rl = [
+    "gymnasium==1.1.1",
+    "stable-baselines3==2.6.0",
+    "tensorboard",
+    "imageio",
+    "imageio-ffmpeg",
+]
+web = ["viser"]
+test = ["pytest"]
+
+# torch is deliberately NOT declared here.  On macOS with conda-forge, pip's
+# torch wheel bundles its own libomp and collides with conda's llvm-openmp:
+#   OMP: Error #15: Initializing libomp.dylib, ...
+# Install torch from conda-forge instead:
+#   conda install -c conda-forge pytorch
+
+[project.scripts]
+p24-viewer = "p24grasp.viewers.desktop:main"
+p24-web = "p24grasp.viewers.web:main"
+p24-demo = "p24grasp.sim.demo:main"
+p24-train = "p24grasp.rl.train:main"
+p24-eval = "p24grasp.rl.eval:main"
+p24-pyroki = "p24grasp.pyroki.ik:main"
+p24-build = "p24grasp.model.mjcf:main"
+
+[tool.setuptools.packages.find]
+include = ["p24grasp*"]
+
+[tool.setuptools.package-data]
+p24grasp = ["assets/**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

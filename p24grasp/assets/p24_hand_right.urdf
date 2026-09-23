@@ -1,0 +1,409 @@
+<?xml version="1.0"?>
+<!-- Generated from P2.4_Hand-DH-20241204.pdf. Lengths are in metres. -->
+<robot name="p24_r_hand">
+  <link name="palm">
+    <inertial>
+			<origin xyz="0.002067 0.005130 0.060716" rpy="0 0 0" />
+			<mass value="0.957071" />
+			<inertia ixx="0.005098" ixy="-0.000059" ixz="-0.000016" iyy="0.004495" iyz="-0.00032" izz="0.001042" />
+		    </inertial>
+		
+    <visual>
+      <geometry><mesh filename="meshes/visual/P2.4_Hand_R_Palm.STL"/></geometry>
+    </visual>
+    <visual>
+      <geometry><mesh filename="meshes/visual/P2.4_Hand_R_Wrist.STL"/></geometry>
+    </visual>
+  </link>
+
+  <!-- Right thumb topology and kinematics match agile_one_actuated_p24_hands.urdf. -->
+  <link name="thumb_mp_link">
+    <inertial>
+			<origin xyz="0.035239 0.008155 0.027352" rpy="0 0 0" />
+			<mass value="0.210044" />
+			<inertia ixx="0.00023" ixy="-0.00007" ixz="-0.000185" iyy="0.000545" iyz="-0.00004" izz="0.00037" />
+		    </inertial>
+		
+    <visual>
+      <geometry><mesh filename="meshes/visual/P2.4_Hand_Thumb_MP.STL"/></geometry>
+    </visual>
+  </link>
+  <joint name="thumb_dh_joint_1" type="revolute">
+    <parent link="palm"/>
+    <child link="thumb_mp_link"/>
+    <origin xyz="0.02963 0.029696 0.070725" rpy="3.1415926 0 1.3352"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="0" upper="1.169370599" effort="1" velocity="2"/>
+  </joint>
+  <link name="thumb_dh_2_link">
+    <inertial>
+			<origin xyz="0.031054 0.004577 -0.000485" rpy="0 0 0" />
+			<mass value="0.08195" />
+			<inertia ixx="0.00001" ixy="-0.000016" ixz="0.000002" iyy="0.00011" iyz="0.0" izz="0.000113" />
+		    </inertial>
+	</link>
+  <joint name="thumb_dh_joint_2" type="revolute">
+    <parent link="thumb_mp_link"/>
+    <child link="thumb_dh_2_link"/>
+    <origin xyz="0.05709627667 0.0143836573032 0.00242240917971" rpy="-1.30592529 0.88356936 0.20667985"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.3490658504" upper="1.3962634015" effort="1" velocity="2"/>
+  </joint>
+  <link name="thumb_ip_link">
+    <inertial>
+			<origin xyz="0.031054 -0.000485 0.004714" rpy="0 0 0" />
+			<mass value="0.08195" />
+			<inertia ixx="0.00001" ixy="0.000002" ixz="-0.000007" iyy="0.000113" iyz="0.0" izz="0.00011" />
+		    </inertial>
+		
+    <visual>
+      <geometry><mesh filename="meshes/visual/P2.4_Hand_R_Thumb_IP.STL"/></geometry>
+    </visual>
+  </link>
+  <joint name="thumb_dh_joint_3" type="revolute">
+    <parent link="thumb_dh_2_link"/>
+    <child link="thumb_ip_link"/>
+    <origin xyz="0 0.00929017751 0" rpy="1.5707963267949032679 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.3490658504" upper="0.3490658504" effort="1" velocity="2"/>
+  </joint>
+  <link name="thumb_mid_link">
+    <inertial>
+			<origin xyz="0.018374 -0.002648 0.001138" rpy="0 0 0" />
+			<mass value="0.045492" />
+			<inertia ixx="0.000004" ixy="0.000002" ixz="0.0" iyy="0.000025" iyz="0.0" izz="0.000025" />
+		    </inertial>
+		
+    <visual>
+      <geometry><mesh filename="meshes/visual/P2.4_Hand_Thumb_DIP.STL"/></geometry>
+    </visual>
+  </link>
+  <joint name="thumb_dh_joint_4" type="revolute">
+    <parent link="thumb_ip_link"/>
+    <child link="thumb_mid_link"/>
+    <origin xyz="0.05268721479 0 0" rpy="-1.5707963267949032679 0.26179939 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="0" upper="1.3962634015" effort="1" velocity="2"/>
+  </joint>
+
+  <!--
+    Virtual marker at the physical thumb tip. The offset is expressed in the
+    thumb_mid_link frame and is estimated from the distal surface center of
+    P2.4_Hand_Thumb_DIP.STL. Keeping it off the joint-4 axis makes the distal
+    thumb flexion observable to position-based retargeting.
+  -->
+  <link name="thumb_tip_link"/>
+  <joint name="thumb_tip_fixed" type="fixed">
+    <parent link="thumb_mid_link"/>
+    <child link="thumb_tip_link"/>
+    <origin xyz="0.044 -0.0075 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- index: base pose and DH values from the supplied PDF. -->
+  <link name="index_dh_1_link">
+    <inertial>
+			<origin xyz="0.027967 0.004188 -0.00067" rpy="0 0 0" />
+			<mass value="0.072625" />
+			<inertia ixx="0.000008" ixy="-0.000013" ixz="0.000003" iyy="0.000082" iyz="0.0" izz="0.000086" />
+		    </inertial>
+	</link>
+  <joint name="index_dh_joint_1" type="revolute">
+    <parent link="palm"/>
+    <child link="index_dh_1_link"/>
+    <origin xyz="-0.0005286 0.042073 0.10476" rpy="1.8029 -1.3021 2.9176"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="0" upper="1.3962634016" effort="1" velocity="2"/>
+  </joint>
+  <link name="index_mp_link">
+    <inertial>
+			<origin xyz="0.027967 -0.000670 0.004668" rpy="0 0 0" />
+			<mass value="0.072625" />
+			<inertia ixx="0.000008" ixy="0.000003" ixz="-0.000005" iyy="0.000086" iyz="0.0" izz="0.000082" />
+		    </inertial>
+		
+    <visual>
+      <geometry><mesh filename="meshes/visual/Finger_R_MP.STL"/></geometry>
+    </visual>
+  </link>
+  <joint name="index_dh_joint_2" type="revolute">
+    <parent link="index_dh_1_link"/>
+    <child link="index_mp_link"/>
+    <origin xyz="0 0.008825605706 0" rpy="1.5707963267949032679 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.2617993878" upper="0.2617993878" effort="1" velocity="2"/>
+  </joint>
+  <link name="index_ip_link">
+    <inertial>
+			<origin xyz="-0.001563 0.014683 -0.001827" rpy="0 0 0" />
+			<mass value="0.031821" />
+			<inertia ixx="0.000012" ixy="0.000001" ixz="0.0" iyy="0.000002" iyz="0.000001" izz="0.000012" />
+		    </inertial>
+		
+    <visual>
+      <geometry><mesh filename="meshes/visual/Finger_IP.STL"/></geometry>
+    </visual>
+  </link>
+  <joint name="index_dh_joint_3" type="revolute">
+    <parent link="index_mp_link"/>
+    <child link="index_ip_link"/>
+    <origin xyz="0.0502251954 0 0" rpy="-1.5707963267949032679 0.2617993878 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="0" upper="1.3962634016" effort="1" velocity="2"/>
+  </joint>
+  <link name="index_dip_link">
+    <inertial>
+			<origin xyz="-0.002097 0.009035 0.000249" rpy="0 0 0" />
+			<mass value="0.013199" />
+			<inertia ixx="0.000002" ixy="0.0" ixz="0.0" iyy="0.000001" iyz="0.0" izz="0.000002" />
+		    </inertial>
+		
+    <visual>
+      <geometry><mesh filename="meshes/visual/Finger_DIP.STL"/></geometry>
+    </visual>
+  </link>
+  <joint name="index_dh_joint_4" type="revolute">
+    <parent link="index_ip_link"/>
+    <child link="index_dip_link"/>
+    <origin xyz="0.028 0 0" rpy="0 0 0.08726646"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="0" upper="1.3962634016" effort="1" velocity="2"/>
+    <mimic joint="index_dh_joint_3" multiplier="1" offset="0"/>
+  </joint>
+  <link name="index_tip_link"></link>
+  <joint name="index_tip_fixed" type="fixed">
+    <parent link="index_dip_link"/>
+    <child link="index_tip_link"/>
+    <origin xyz="0.034 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- middle: base pose and DH values from the supplied PDF. -->
+  <link name="middle_dh_1_link">
+    <inertial>
+			<origin xyz="0.027967 0.004188 -0.00067" rpy="0 0 0" />
+			<mass value="0.072625" />
+			<inertia ixx="0.000008" ixy="-0.000013" ixz="0.000003" iyy="0.000082" iyz="0.0" izz="0.000086" />
+		    </inertial>
+	</link>
+  <joint name="middle_dh_joint_1" type="revolute">
+    <parent link="palm"/>
+    <child link="middle_dh_1_link"/>
+    <origin xyz="-0.0023699 0.013696 0.11285" rpy="1.5708 -1.309 -3.1416"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="0" upper="1.3962634016" effort="1" velocity="2"/>
+  </joint>
+  <link name="middle_mp_link">
+    <inertial>
+			<origin xyz="0.027967 -0.000670 0.004668" rpy="0 0 0" />
+			<mass value="0.072625" />
+			<inertia ixx="0.000008" ixy="0.000003" ixz="-0.000005" iyy="0.000086" iyz="0.0" izz="0.000082" />
+		    </inertial>
+		
+    <visual>
+      <geometry><mesh filename="meshes/visual/Finger_R_MP.STL"/></geometry>
+    </visual>
+  </link>
+  <joint name="middle_dh_joint_2" type="revolute">
+    <parent link="middle_dh_1_link"/>
+    <child link="middle_mp_link"/>
+    <origin xyz="0 0.008825605706 0" rpy="1.5707963267949032679 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.2617993878" upper="0.2617993878" effort="1" velocity="2"/>
+  </joint>
+  <link name="middle_ip_link">
+    <inertial>
+			<origin xyz="-0.001563 0.014683 -0.001827" rpy="0 0 0" />
+			<mass value="0.031821" />
+			<inertia ixx="0.000012" ixy="0.000001" ixz="0.0" iyy="0.000002" iyz="0.000001" izz="0.000012" />
+		    </inertial>
+		
+    <visual>
+      <geometry><mesh filename="meshes/visual/Finger_IP.STL"/></geometry>
+    </visual>
+  </link>
+  <joint name="middle_dh_joint_3" type="revolute">
+    <parent link="middle_mp_link"/>
+    <child link="middle_ip_link"/>
+    <origin xyz="0.0502251954 0 0" rpy="-1.5707963267949032679 0.2617993878 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="0" upper="1.3962634016" effort="1" velocity="2"/>
+  </joint>
+  <link name="middle_dip_link">
+    <inertial>
+			<origin xyz="-0.002097 0.009035 0.000249" rpy="0 0 0" />
+			<mass value="0.013199" />
+			<inertia ixx="0.000002" ixy="0.0" ixz="0.0" iyy="0.000001" iyz="0.0" izz="0.000002" />
+		    </inertial>
+		
+    <visual>
+      <geometry><mesh filename="meshes/visual/Finger_DIP.STL"/></geometry>
+    </visual>
+  </link>
+  <joint name="middle_dh_joint_4" type="revolute">
+    <parent link="middle_ip_link"/>
+    <child link="middle_dip_link"/>
+    <origin xyz="0.028 0 0" rpy="0 0 0.08726646"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="0" upper="1.3962634016" effort="1" velocity="2"/>
+    <mimic joint="middle_dh_joint_3" multiplier="1" offset="0"/>
+  </joint>
+  <link name="middle_tip_link"></link>
+  <joint name="middle_tip_fixed" type="fixed">
+    <parent link="middle_dip_link"/>
+    <child link="middle_tip_link"/>
+    <origin xyz="0.034 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ring: base pose and DH values from the supplied PDF. -->
+  <link name="ring_dh_1_link">
+    <inertial>
+			<origin xyz="0.027967 0.004188 -0.00067" rpy="0 0 0" />
+			<mass value="0.072625" />
+			<inertia ixx="0.000008" ixy="-0.000013" ixz="0.000003" iyy="0.000082" iyz="0.0" izz="0.000086" />
+		    </inertial>
+	</link>
+  <joint name="ring_dh_joint_1" type="revolute">
+    <parent link="palm"/>
+    <child link="ring_dh_1_link"/>
+    <origin xyz="-0.0023699 -0.013787 0.10271" rpy="1.3387 -1.3021 -2.9176"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="0" upper="1.3962634016" effort="1" velocity="2"/>
+  </joint>
+  <link name="ring_mp_link">
+    <inertial>
+			<origin xyz="0.027967 -0.000670 0.004668" rpy="0 0 0" />
+			<mass value="0.072625" />
+			<inertia ixx="0.000008" ixy="0.000003" ixz="-0.000005" iyy="0.000086" iyz="0.0" izz="0.000082" />
+		    </inertial>
+		
+    <visual>
+      <geometry><mesh filename="meshes/visual/Finger_R_MP.STL"/></geometry>
+    </visual>
+  </link>
+  <joint name="ring_dh_joint_2" type="revolute">
+    <parent link="ring_dh_1_link"/>
+    <child link="ring_mp_link"/>
+    <origin xyz="0 0.008825605706 0" rpy="1.5707963267949032679 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.2617993878" upper="0.2617993878" effort="1" velocity="2"/>
+  </joint>
+  <link name="ring_ip_link">
+    <inertial>
+			<origin xyz="-0.001563 0.014683 -0.001827" rpy="0 0 0" />
+			<mass value="0.031821" />
+			<inertia ixx="0.000012" ixy="0.000001" ixz="0.0" iyy="0.000002" iyz="0.000001" izz="0.000012" />
+		    </inertial>
+		
+    <visual>
+      <geometry><mesh filename="meshes/visual/Finger_IP.STL"/></geometry>
+    </visual>
+  </link>
+  <joint name="ring_dh_joint_3" type="revolute">
+    <parent link="ring_mp_link"/>
+    <child link="ring_ip_link"/>
+    <origin xyz="0.0502251954 0 0" rpy="-1.5707963267949032679 0.2617993878 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="0" upper="1.3962634016" effort="1" velocity="2"/>
+  </joint>
+  <link name="ring_dip_link">
+    <inertial>
+			<origin xyz="-0.002097 0.009035 0.000249" rpy="0 0 0" />
+			<mass value="0.013199" />
+			<inertia ixx="0.000002" ixy="0.0" ixz="0.0" iyy="0.000001" iyz="0.0" izz="0.000002" />
+		    </inertial>
+		
+    <visual>
+      <geometry><mesh filename="meshes/visual/Finger_DIP.STL"/></geometry>
+    </visual>
+  </link>
+  <joint name="ring_dh_joint_4" type="revolute">
+    <parent link="ring_ip_link"/>
+    <child link="ring_dip_link"/>
+    <origin xyz="0.028 0 0" rpy="0 0 0.08726646"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="0" upper="1.3962634016" effort="1" velocity="2"/>
+    <mimic joint="ring_dh_joint_3" multiplier="1" offset="0"/>
+  </joint>
+  <link name="ring_tip_link"></link>
+  <joint name="ring_tip_fixed" type="fixed">
+    <parent link="ring_dip_link"/>
+    <child link="ring_tip_link"/>
+    <origin xyz="0.034 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- little: base pose and DH values from the supplied PDF. -->
+  <link name="little_dh_1_link">
+    <inertial>
+			<origin xyz="0.027967 0.004188 -0.00067" rpy="0 0 0" />
+			<mass value="0.072625" />
+			<inertia ixx="0.000008" ixy="-0.000013" ixz="0.000003" iyy="0.000082" iyz="0.0" izz="0.000086" />
+		    </inertial>
+	</link>
+  <joint name="little_dh_joint_1" type="revolute">
+    <parent link="palm"/>
+    <child link="little_dh_1_link"/>
+    <origin xyz="-0.0005 -0.039436 0.08816" rpy="1.185 -1.2893 -2.7696"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="0" upper="1.3962634016" effort="1" velocity="2"/>
+  </joint>
+  <link name="little_mp_link">
+    <inertial>
+			<origin xyz="0.027967 -0.000670 0.004668" rpy="0 0 0" />
+			<mass value="0.072625" />
+			<inertia ixx="0.000008" ixy="0.000003" ixz="-0.000005" iyy="0.000086" iyz="0.0" izz="0.000082" />
+		    </inertial>
+		
+    <visual>
+      <geometry><mesh filename="meshes/visual/Finger_R_MP.STL"/></geometry>
+    </visual>
+  </link>
+  <joint name="little_dh_joint_2" type="revolute">
+    <parent link="little_dh_1_link"/>
+    <child link="little_mp_link"/>
+    <origin xyz="0 0.008825605706 0" rpy="1.5707963267949032679 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.2617993878" upper="0.2617993878" effort="1" velocity="2"/>
+  </joint>
+  <link name="little_ip_link">
+    <inertial>
+			<origin xyz="-0.001563 0.014683 -0.001827" rpy="0 0 0" />
+			<mass value="0.031821" />
+			<inertia ixx="0.000012" ixy="0.000001" ixz="0.0" iyy="0.000002" iyz="0.000001" izz="0.000012" />
+		    </inertial>
+		
+    <visual>
+      <geometry><mesh filename="meshes/visual/Finger_IP.STL"/></geometry>
+    </visual>
+  </link>
+  <joint name="little_dh_joint_3" type="revolute">
+    <parent link="little_mp_link"/>
+    <child link="little_ip_link"/>
+    <origin xyz="0.0502251954 0 0" rpy="-1.5707963267949032679 0.2617993878 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="0" upper="1.3962634016" effort="1" velocity="2"/>
+  </joint>
+  <link name="little_dip_link">
+    <inertial>
+			<origin xyz="-0.002097 0.009035 0.000249" rpy="0 0 0" />
+			<mass value="0.013199" />
+			<inertia ixx="0.000002" ixy="0.0" ixz="0.0" iyy="0.000001" iyz="0.0" izz="0.000002" />
+		    </inertial>
+		
+    <visual>
+      <geometry><mesh filename="meshes/visual/Finger_DIP.STL"/></geometry>
+    </visual>
+  </link>
+  <joint name="little_dh_joint_4" type="revolute">
+    <parent link="little_ip_link"/>
+    <child link="little_dip_link"/>
+    <origin xyz="0.028 0 0" rpy="0 0 0.08726646"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="0" upper="1.3962634016" effort="1" velocity="2"/>
+    <mimic joint="little_dh_joint_3" multiplier="1" offset="0"/>
+  </joint>
+  <link name="little_tip_link"></link>
+  <joint name="little_tip_fixed" type="fixed">
+    <parent link="little_dip_link"/>
+    <child link="little_tip_link"/>
+    <origin xyz="0.034 0 0" rpy="0 0 0"/>
+  </joint>
+</robot>
