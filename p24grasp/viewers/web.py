@@ -36,7 +36,12 @@ faulthandler.dump_traceback_later(90.0, repeat=True)
 
 from p24grasp.env.obs import actuator_joint_order  # noqa: E402
 from p24grasp.model.urdf import HandModel  # noqa: E402
-from p24grasp.paths import build_dir, ensure_hand_xml, urdf_path  # noqa: E402
+from p24grasp.paths import (  # noqa: E402
+    assets_dir,
+    build_dir,
+    ensure_hand_xml,
+    urdf_path,
+)
 from p24grasp.kinematics.ik import HALF_LENGTH, fist_center  # noqa: E402
 from p24grasp.sim.scene import (  # noqa: E402
     OBJECT_BODY,
@@ -231,9 +236,12 @@ def make_hand_urdf() -> Path:
     (11 MB) is swapped for the decimated one used by MuJoCo.
     """
     urdf = urdf_path().read_text(encoding="utf-8")
-    urdf = urdf.replace('filename="meshes/', 'filename="assets/p24_meshes/')
-    urdf = urdf.replace("assets/p24_meshes/visual/P2.4_Hand_R_Palm.STL",
-                        "assets/p24_meshes/mujoco/P2.4_Hand_R_Palm_180000.STL")
+    # absolute mesh paths: the temp URDF lives in build/, and yourdfpy resolves
+    # relative paths against the CWD, not the URDF location
+    mesh_root = assets_dir() / "p24_meshes"
+    urdf = urdf.replace('filename="meshes/', f'filename="{mesh_root}/')
+    urdf = urdf.replace(f"{mesh_root}/visual/P2.4_Hand_R_Palm.STL",
+                        f"{mesh_root}/mujoco/P2.4_Hand_R_Palm_180000.STL")
     out = build_dir() / "_web_hand.urdf"
     out.write_text(urdf, encoding="utf-8")
     return out
