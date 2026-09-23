@@ -30,6 +30,7 @@ from p24grasp.kinematics.ik import (  # noqa: E402
     fist_center,
     solve_angles,
     tip_center_radius,
+    wrap_aligned_center,
 )
 from p24grasp.model.urdf import HandModel  # noqa: E402
 from p24grasp.paths import assets_dir, build_dir, ensure_hand_xml  # noqa: E402
@@ -229,9 +230,10 @@ class InteractiveGrasp:
             )
             self.center_mode = "ik-fit"
         else:
-            # the clasp: where the fingers actually close around an object, and
-            # the only placement in which the hand holds one (see fist_center)
-            self.center = fist_center(self.hand)
+            # the clasp, wrap-aligned so the fingertips curl over the far side
+            # of the cylinder instead of pushing it forward
+            self.center = (wrap_aligned_center(self.hand, args.radius)
+                           if args.shape == "cylinder" else fist_center(self.hand))
             self.center_mode = "clasp"
 
         self.open_gaps, self.ik_residuals = finger_reach(
@@ -1028,9 +1030,9 @@ def main():
     ap.add_argument("--urdf", default=str(assets_dir() / "p24_hand_right.urdf"))
     ap.add_argument("--shape", choices=SHAPES, default="cylinder",
                     help="grasped object: cylinder (axis +x) or sphere")
-    ap.add_argument("--radius", type=float, default=0.032,
-                    help="object radius [m]; the clasp volume is ~77 mm across, so "
-                         "0.025-0.038 is the range that can actually be held")
+    ap.add_argument("--radius", type=float, default=0.026,
+                    help="object radius [m]; 0.026 is the largest cylinder the "
+                         "fingers can actually wrap over (see docs/FINDINGS.md)")
     ap.add_argument("--weight", type=float, default=0.85, help="object mass [kg]")
     ap.add_argument("--center", type=float, nargs=3, default=None, metavar=("X", "Y", "Z"),
                     help="object centre [m]; default is the clasp centre, the only "

@@ -63,6 +63,25 @@ def fist_center(model: HandModel) -> np.ndarray:
     return np.mean(np.asarray(tips), axis=0)
 
 
+# Maximum x the fingertips reach at full flexion.  A cylinder can only be
+# wrapped when its far surface (centre x + radius) sits at or behind this
+# point; larger objects are merely cradled and get squeezed out over time.
+TIP_REACH_X = 0.026
+
+
+def wrap_aligned_center(model: HandModel, radius: float) -> np.ndarray:
+    """Cylinder centre whose far surface aligns with the fingertips' max reach.
+
+    The plain fist centre leaves the fingertips short of wrapping over a
+    26 mm+ object, so the fingers push it forward (+x) instead of holding it -
+    the "wet soap" extrusion that drops the object after ~14 s.  Aligning the
+    far surface with the reach point lets the fingertips curl over the top,
+    which holds a 26 mm cylinder for 30 s+ in simulation.
+    """
+    c = fist_center(model)
+    return c + np.array([TIP_REACH_X - radius - c[0], 0.0, 0.0])
+
+
 def radial_direction(point, center, axis=AXIS, shape: str = "cylinder"):
     """Unit vector from the object centre toward ``point``, plus its length.
 

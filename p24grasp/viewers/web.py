@@ -42,7 +42,7 @@ from p24grasp.paths import (  # noqa: E402
     ensure_hand_xml,
     urdf_path,
 )
-from p24grasp.kinematics.ik import HALF_LENGTH, fist_center  # noqa: E402
+from p24grasp.kinematics.ik import HALF_LENGTH, fist_center, wrap_aligned_center  # noqa: E402
 from p24grasp.sim.scene import (  # noqa: E402
     OBJECT_BODY,
     OBJECT_JOINT,
@@ -64,7 +64,7 @@ SPRING_ENGAGE = 0.008  # m - beyond this gap the gizmo is being dragged
 # Besides the UX, a free-falling object left running is the state in which a
 # rare MuJoCo constraint-solver crash (segfault inside mj_fwdConstraint) was
 # observed once; respawning keeps the simulation away from it.
-DROP_RESPAWN = 0.5   # m
+DROP_RESPAWN = 0.12  # m - the cradle extrudes the object in ~10 s; catch it early
 
 
 class WebGrasp:
@@ -109,14 +109,21 @@ class WebGrasp:
             )
 
         self.adjusting = True
-        self.obj_target = np.asarray(self.center, dtype=float).copy()
+        self.obj_target = self._default_target()
         # horizontal initial pose: cylinder axis along +y across the palm
         self.tilt_x = -np.pi / 2.0 if shape == "cylinder" else 0.0
         self.tilt_y = 0.0
         self.elapsed = 0.0
+        self.squeeze = 1.0  # multiplier on the base grasp pose (re-squeeze feedback)
         self.reset_placement()
 
     # ------------------------------------------------------------------ #
+    def _default_target(self) -> np.ndarray:
+        """Default placement: wrap-aligned for cylinders (see kinematics)."""
+        if self.shape == "cylinder":
+            return wrap_aligned_center(self.hand, self.radius)
+        return np.asarray(self.center, dtype=float).copy()
+
     def grasp_pose(self) -> np.ndarray:
         return np.where(self._is_thumb, 0.60 * self.q_flex, 0.90 * self.q_flex)
 
@@ -155,7 +162,7 @@ class WebGrasp:
     def reset_placement(self):
         m, d = self.model, self.data
         mujoco.mj_resetData(m, d)
-        self.obj_target = np.asarray(self.center, dtype=float).copy()
+        self.obj_target = self._default_target()
         self.tilt_x = -np.pi / 2.0 if self.shape == "cylinder" else 0.0
         self.tilt_y = 0.0
         self.pin_object()
@@ -165,6 +172,7 @@ class WebGrasp:
         d.ctrl[:self.n_joint_act] = q
         mujoco.mj_forward(m, d)
         self.elapsed = 0.0
+        self.squeeze = 1.0
 
     def start_run(self):
         """Release the object and start the automatic grasp from a clean state."""
@@ -184,6 +192,7 @@ class WebGrasp:
         mujoco.mj_forward(m, d)
         self.adjusting = False
         self.elapsed = 0.0
+        self.squeeze = 1.0
 
     def back_to_placement(self):
         d = self.data
@@ -214,14 +223,34 @@ class WebGrasp:
     def step(self, pull: np.ndarray | None = None):
         m, d = self.model, self.data
         nsub = max(1, int(round(FRAME_DT / m.opt.timestep)))
+        dt = m.opt.timestep
         for _ in range(nsub):
             if self.adjusting:
                 d.ctrl[:self.n_joint_act] = np.clip(
-                    self.grasp_pose(),
+                    self.grasp_pose() * self.squeeze,
                     m.actuator_ctrlrange[:self.n_joint_act, 0],
                     m.actuator_ctrlrange[:self.n_joint_act, 1],
                 )
                 self.pin_object()
+            else:
+                # Re-squeeze feedback: a fixed-pose cage slowly extrudes the
+                # object - contact-solver jitter and gravity creep it out of
+                # the wrap, the wrap shrinks, friction capacity drops, and it
+                # slips out (measured 13.8/12.1/15.8 s for kp 0.5/2/5, so
+                # servo stiffness barely matters).  Closing the loop on drift
+                # and contact count re-tightens the grip the moment the object
+                # starts to creep.
+                drift = float(np.linalg.norm(d.xpos[self.obj_body] - self.obj_target))
+                nc = self.contact_count()
+                if drift > 0.050 or nc < 4:
+                    self.squeeze = min(1.12, self.squeeze + 0.10 * dt)
+                elif drift < 0.035 and nc >= 6:
+                    self.squeeze = max(1.0, self.squeeze - 0.04 * dt)
+                d.ctrl[:self.n_joint_act] = np.clip(
+                    self.grasp_pose() * self.squeeze,
+                    m.actuator_ctrlrange[:self.n_joint_act, 0],
+                    m.actuator_ctrlrange[:self.n_joint_act, 1],
+                )
             d.xfrc_applied[:] = 0.0
             if pull is not None:
                 d.xfrc_applied[self.obj_body, :3] = pull
@@ -251,7 +280,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--shape", choices=("cylinder", "sphere"), default="cylinder")
-    ap.add_argument("--radius", type=float, default=0.032)
+    ap.add_argument("--radius", type=float, default=0.026,
+                    help="cylinder/sphere radius [m]; 0.026 is the largest "
+                         "cylinder the fingers can wrap (see FINDINGS)")
     ap.add_argument("--weight", type=float, default=0.85)
     ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--auto-run", action="store_true",

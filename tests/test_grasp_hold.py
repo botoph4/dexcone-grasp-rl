@@ -10,7 +10,7 @@ from p24grasp.viewers.web import WebGrasp
 
 
 def test_cylinder_held_4s():
-    g = WebGrasp("cylinder", 0.032, 0.85)
+    g = WebGrasp("cylinder", 0.026, 0.85)
     g.start_run()
     for _ in range(240):
         g.step()
@@ -19,7 +19,7 @@ def test_cylinder_held_4s():
 
 
 def test_pull_3n_still_held():
-    g = WebGrasp("cylinder", 0.032, 0.85)
+    g = WebGrasp("cylinder", 0.026, 0.85)
     g.start_run()
     for _ in range(60):
         g.step()
