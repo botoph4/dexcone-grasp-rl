@@ -39,3 +39,32 @@ def test_damping_opposes_angular_velocity():
     damped = rotation_torque(q_id, q_x90, k=0.01, omega=np.array([1.0, 0.0, 0.0]))
     assert base[0] < 0.03
     assert damped[0] < base[0]
+
+
+def test_tilts_from_quat_roundtrip():
+    from p24grasp.viewers.web import tilts_from_quat
+
+    def quat_of(tx, ty):
+        ax, ay = tx / 2, ty / 2
+        qx = np.array([np.cos(ax), np.sin(ax), 0, 0])
+        qy = np.array([np.cos(ay), 0, np.sin(ay), 0])
+        w1, x1, y1, z1 = qx
+        w2, x2, y2, z2 = qy
+        return np.array([
+            w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+            w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+            w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+        ])
+
+    rng = np.random.default_rng(0)
+    for _ in range(20):
+        tx = rng.uniform(-np.pi, np.pi)
+        ty = rng.uniform(-np.pi, np.pi)
+        tx2, ty2 = tilts_from_quat(quat_of(tx, ty))
+        # same axis direction is the criterion (rotation about the axis is
+        # invisible for a cylinder)
+        from p24grasp.kinematics.ik import AXIS
+        axis1 = np.array([np.sin(ty), -np.sin(tx) * np.cos(ty), np.cos(tx) * np.cos(ty)])
+        axis2 = np.array([np.sin(ty2), -np.sin(tx2) * np.cos(ty2), np.cos(tx2) * np.cos(ty2)])
+        assert np.linalg.norm(axis1 - axis2) < 1e-9

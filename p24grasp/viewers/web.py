@@ -67,6 +67,23 @@ ROT_MAX = 0.03  # N*m
 ROT_ALIGN = np.radians(2.0)  # rad - below this the gizmo snaps to the object
 
 
+def tilts_from_quat(q) -> tuple[float, float]:
+    """Extract (tilt_x, tilt_y) from a wxyz quaternion.
+
+    Only the direction of the body's +z axis matters for a cylinder (a
+    rotation about that axis is physically invisible), so the two tilts are
+    recovered from the axis alone: Rx(tx)Ry(ty) maps +z to
+    (sin ty, -sin tx cos ty, cos tx cos ty).
+    """
+    w, x, y, z = q
+    ax = 2 * (x * z + w * y)
+    ay = 2 * (y * z - w * x)
+    az = 1 - 2 * (x * x + y * y)
+    ty = float(np.arcsin(np.clip(ax, -1.0, 1.0)))
+    tx = float(np.arctan2(-ay, az))
+    return tx, ty
+
+
 def quat_angle(q1, q2) -> float:
     """Angular distance [rad] between two wxyz quaternions."""
     dot = abs(float(np.clip(np.dot(np.asarray(q1), np.asarray(q2)), -1.0, 1.0)))
@@ -421,18 +438,30 @@ def main():
 
     gui.add_button("释放抓取").on_click(on_release)
     tab_run = tabs.add_tab("抓取")
-    status = gui.add_text("status", "—")
-    forces_text = gui.add_text("forces", "—")
+    status_md = gui.add_markdown("—")
+    forces_md = gui.add_markdown("—")
     gui.add_button("回到摆位").on_click(on_back)
     gui.add_button("复位").on_click(on_reset)
     tab_angles = tabs.add_tab("关节角度")
-    angles_text = gui.add_text("angles", "—")
+    angles_md = gui.add_markdown("—")
 
     if args.auto_run:
         g.start_run()
     print(f"[sim_web] open http://localhost:{args.port} in a browser "
           f"(shape={args.shape}, r={args.radius * 1000:.0f} mm, m={args.weight} kg, "
           f"mode={'RUN' if args.auto_run else 'ADJUST'})")
+
+    # The transform control's pose only changes while the user drags it; viser
+    # delivers those changes through on_update, which is authoritative (polling
+    # .position/.wxyz misses drags between frames).
+    gizmo_update = {"pending": False, "pos": None, "quat": None}
+
+    def on_gizmo_update(_event):
+        gizmo_update["pending"] = True
+        gizmo_update["pos"] = np.asarray(gizmo.position, dtype=float).copy()
+        gizmo_update["quat"] = np.asarray(gizmo.wxyz, dtype=float).copy()
+
+    gizmo.on_update(on_gizmo_update)
 
     # ---------------- main loop ----------------
     prev_gizmo_pos = np.asarray(gizmo.position, dtype=float)
@@ -455,14 +484,22 @@ def main():
             cur_slider = slider_state()
             slider_changed = [abs(c - p) > 1e-9 for c, p in zip(cur_slider, prev_slider)]
 
+            # consume live drag updates from the transform control
+            user_drag = gizmo_update["pending"]
+            if user_drag:
+                gizmo_update["pending"] = False
+                gizmo_pos = gizmo_update["pos"]
+                gizmo_quat_drag = gizmo_update["quat"]
+
             if g.adjusting:
                 # sliders and gizmo both feed the placement; the last one moved
-                # wins.  The gizmo drags position only; orientation comes from
-                # the tilt sliders.
+                # wins.  The gizmo drags position AND orientation.
                 target = np.array(cur_slider[:3])
-                if np.linalg.norm(gizmo_pos - prev_gizmo_pos) > 1e-6:
+                if user_drag:
                     target = gizmo_pos
                     s_x.value, s_y.value, s_z.value = tuple(target)
+                    g.tilt_x, g.tilt_y = tilts_from_quat(gizmo_quat_drag)
+                    s_tx.value, s_ty.value = g.tilt_x, g.tilt_y
                 g.obj_target = target
                 g.tilt_x, g.tilt_y = float(s_tx.value), float(s_ty.value)
                 if abs(s_size.value / 1000 - g.radius) > 1e-9:
@@ -481,11 +518,12 @@ def main():
                 hand_vis.update_cfg(g.hand_cfg())
             else:
                 # RUN mode.  Moving a slider teleports the object to the new
-                # pose (the grasp then reacts to it); otherwise the gizmo keeps
-                # its spring-pull behaviour.
+                # pose; dragging the gizmo pulls it with a spring; rotating
+                # the gizmo's rings rotates the object kinematically so the
+                # effect is immediate and visible.
+                adr = g.model.jnt_qposadr[g.obj_joint]
+                dadr = g.model.jnt_dofadr[g.obj_joint]
                 if any(slider_changed):
-                    adr = g.model.jnt_qposadr[g.obj_joint]
-                    dadr = g.model.jnt_dofadr[g.obj_joint]
                     g.tilt_x, g.tilt_y = float(s_tx.value), float(s_ty.value)
                     g.data.qpos[adr:adr + 3] = np.asarray(cur_slider[:3])
                     g.data.qpos[adr + 3:adr + 7] = g.object_quat()
@@ -504,8 +542,6 @@ def main():
                     prev_obj_pos = g.data.xpos[g.obj_body].copy()
                 else:
                     obj_pos = g.data.xpos[g.obj_body]
-                    gizmo_quat = np.asarray(gizmo.wxyz, dtype=float)
-                    obj_quat = np.asarray(g.data.xquat[g.obj_body], dtype=float)
                     delta = gizmo_pos - obj_pos
                     pull = np.zeros(3)
                     if float(np.linalg.norm(delta)) > SPRING_ENGAGE:
@@ -516,19 +552,15 @@ def main():
                         s_x.value, s_y.value, s_z.value = tuple(gizmo_pos)
                     else:
                         gizmo.position = obj_pos
-                    # rotational spring: dragging the gizmo's rotation rings
-                    # must rotate the object, not get snapped back each frame
-                    rot_dragged = quat_angle(prev_gizmo_quat, gizmo_quat) > 1e-3
-                    torque = np.zeros(3)
-                    if rot_dragged or quat_angle(obj_quat, gizmo_quat) > ROT_ALIGN:
-                        torque = rotation_torque(
-                            obj_quat, gizmo_quat,
-                            omega=g.data.cvel[g.obj_body, :3],
-                        )
-                    else:
-                        # aligned and idle: let the gizmo ride the object
-                        gizmo.wxyz = obj_quat
-                    g.step(pull=pull, torque=torque)
+                    if user_drag and quat_angle(g.data.xquat[g.obj_body],
+                                                gizmo_quat_drag) > 1e-3:
+                        # kinematic rotation: instant and visible
+                        g.data.qpos[adr + 3:adr + 7] = gizmo_quat_drag
+                        g.data.qvel[dadr + 3:dadr + 6] = 0.0
+                        gizmo.wxyz = gizmo_quat_drag
+                        g.tilt_x, g.tilt_y = tilts_from_quat(gizmo_quat_drag)
+                        s_tx.value, s_ty.value = g.tilt_x, g.tilt_y
+                    g.step(pull=pull)
                     obj_pos = g.data.xpos[g.obj_body]
                     obj_vel = (obj_pos - prev_obj_pos) / FRAME_DT
                     prev_obj_pos = obj_pos
@@ -553,36 +585,44 @@ def main():
             if g.elapsed - last_status > 0.25:
                 last_status = g.elapsed
                 cfg = g.hand_cfg()
-                lines = []
+                alines = ["| finger | 关节角 (deg) |", "| --- | --- |"]
                 for chain in g.hand.chains:
                     names = [j.name for j in chain.joints if j.type == "revolute"]
-                    lines.append(
-                        f"{chain.name:<8}"
-                        + "  ".join(f"{np.degrees(cfg[n]):+6.1f}" for n in names)
+                    alines.append(
+                        "| " + chain.name + " | "
+                        + " ".join(f"{np.degrees(cfg[n]):+6.1f}" for n in names) + " |"
                     )
-                angles_text.value = "deg\n" + "\n".join(lines)
+                angles_md.content = "\n".join(alines)
+
                 forces = g.finger_forces()
-                flines = [f"{'finger':<8}{'法向 N':>9}{'摩擦 N':>9}{'接触':>6}"]
+                flines = ["| finger | 法向 N | 摩擦 N | 接触 |", "| --- | --- | --- | --- |"]
                 total = [0.0, 0.0, 0]
                 for ch in g.hand.chains:
                     nrm, frc, ncon = forces.get(ch.name, (0.0, 0.0, 0))
-                    flines.append(f"{ch.name:<8}{nrm:>9.2f}{frc:>9.2f}{ncon:>6d}")
-                    total[0] += nrm; total[1] += frc; total[2] += ncon
-                flines.append(f"{'合计':<8}{total[0]:>9.2f}{total[1]:>9.2f}{total[2]:>6d}")
-                forces_text.value = "\n".join(flines)
+                    flines.append(f"| {ch.name} | {nrm:.2f} | {frc:.2f} | {ncon} |")
+                    total[0] += nrm
+                    total[1] += frc
+                    total[2] += ncon
+                flines.append(f"| **合计** | **{total[0]:.2f}** | **{total[1]:.2f}** | **{total[2]}** |")
+                forces_md.content = "\n".join(flines)
+
                 if g.adjusting:
-                    status.value = (
-                        f"摆位中（物体已钉住）\n"
-                        f"pos ({g.obj_target[0]:+.3f}, {g.obj_target[1]:+.3f}, "
-                        f"{g.obj_target[2]:+.3f})\nr={g.radius * 1000:.1f} mm"
+                    status_md.content = (
+                        f"**摆位中**（物体已钉住）\n\n"
+                        f"- 位置 ({g.obj_target[0]:+.3f}, {g.obj_target[1]:+.3f}, "
+                        f"{g.obj_target[2]:+.3f})\n"
+                        f"- 半径 {g.radius * 1000:.1f} mm\n"
+                        f"- 倾斜 x {np.degrees(g.tilt_x):+.0f}° / y {np.degrees(g.tilt_y):+.0f}°"
                     )
                 else:
-                    drift = float(np.linalg.norm(g.data.xpos[g.obj_body] - g.obj_target)) * 1000
+                    drift = float(np.linalg.norm(
+                        g.data.xpos[g.obj_body] - g.obj_target)) * 1000
                     nc = g.contact_count()
                     held = drift < 75 and nc >= 3
-                    status.value = (
-                        f"t={g.elapsed:4.1f}s  漂移 {drift:5.1f} mm  接触 {nc}\n"
-                        f"{'已握持' if held else '未握持（拖手柄拉动物体试试）'}"
+                    status_md.content = (
+                        f"| t | 漂移 | 接触 | 状态 |\n| --- | --- | --- | --- |\n"
+                        f"| {g.elapsed:.1f} s | {drift:.1f} mm | {nc} | "
+                        f"{'已握持' if held else '未握持'} |"
                     )
                     print(f"\r[sim_web] t={g.elapsed:4.1f}s drift={drift:5.1f}mm "
                           f"contacts={nc}  ", end="", flush=True)
