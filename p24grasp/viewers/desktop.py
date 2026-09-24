@@ -545,7 +545,9 @@ class InteractiveGrasp:
         would push the object out, so the thumb is scaled separately (see
         grasp_env.INIT_THUMB_SCALE / INIT_FINGER_SCALE).
         """
-        return np.where(self._is_thumb, 0.60 * self.q_flex, 0.90 * self.q_flex)
+        # thumb 0.90: presses the object's top from the start (0.60 only acted
+        # as an end-stop after the object had already slid out ~55 mm)
+        return np.where(self._is_thumb, 0.90 * self.q_flex, 0.90 * self.q_flex)
 
     def _apply_grasp_pose(self):
         n = self.n_joint_act

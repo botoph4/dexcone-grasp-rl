@@ -184,7 +184,10 @@ class WebGrasp:
         return np.asarray(self.center, dtype=float).copy()
 
     def grasp_pose(self) -> np.ndarray:
-        return np.where(self._is_thumb, 0.60 * self.q_flex, 0.90 * self.q_flex)
+        # thumb 0.90: at 0.60 the thumb only acted as an end-stop after the
+        # object slid 55 mm; at 0.90 it presses the object's top from t=0.3 s
+        # and cuts the worst drift from 76 to ~60 mm
+        return np.where(self._is_thumb, 0.90 * self.q_flex, 0.90 * self.q_flex)
 
     def object_quat(self) -> np.ndarray:
         ax, ay = self.tilt_x / 2.0, self.tilt_y / 2.0
@@ -362,6 +365,42 @@ def make_hand_urdf() -> Path:
     return out
 
 
+TEXTS = {
+    "hint": {
+        "zh": "拖拽物体上的手柄移动/旋转它；滑块调整姿态与尺寸。",
+        "en": "Drag the gizmo on the object to move/rotate it; use the sliders for pose and size.",
+    },
+    "slider_x": {"zh": "x [m]", "en": "x [m]"},
+    "slider_y": {"zh": "y [m]", "en": "y [m]"},
+    "slider_z": {"zh": "z [m]", "en": "z [m]"},
+    "slider_tx": {"zh": "tilt x [rad]", "en": "tilt x [rad]"},
+    "slider_ty": {"zh": "tilt y [rad]", "en": "tilt y [rad]"},
+    "slider_size": {"zh": "尺寸 [mm]", "en": "size [mm]"},
+    "btn_release": {"zh": "释放抓取", "en": "Release grasp"},
+    "btn_back": {"zh": "回到摆位", "en": "Back to placement"},
+    "btn_reset": {"zh": "复位", "en": "Reset"},
+    "btn_lang": {"zh": "English", "en": "中文"},
+    "sec_status": {"zh": "### 抓取状态", "en": "### Grasp status"},
+    "sec_forces": {"zh": "### 各指接触力", "en": "### Per-finger forces"},
+    "sec_angles": {"zh": "### 关节角度", "en": "### Joint angles"},
+    "adjusting": {"zh": "摆位中（物体已钉住）", "en": "Placement (object pinned)"},
+    "pos": {"zh": "位置", "en": "position"},
+    "radius": {"zh": "半径", "en": "radius"},
+    "tilt": {"zh": "倾斜", "en": "tilt"},
+    "col_finger": {"zh": "手指", "en": "finger"},
+    "col_normal": {"zh": "法向 N", "en": "normal N"},
+    "col_friction": {"zh": "摩擦 N", "en": "friction N"},
+    "col_contacts": {"zh": "接触", "en": "contacts"},
+    "total": {"zh": "合计", "en": "total"},
+    "col_t": {"zh": "t", "en": "t"},
+    "col_drift": {"zh": "漂移", "en": "drift"},
+    "col_state": {"zh": "状态", "en": "state"},
+    "held": {"zh": "已握持", "en": "held"},
+    "not_held": {"zh": "未握持", "en": "not held"},
+    "joints_deg": {"zh": "关节角 (deg)", "en": "joint angles (deg)"},
+}
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -405,22 +444,18 @@ def main():
     gizmo = scene.add_transform_controls("/gizmo", scale=0.14,
                                          position=g.obj_target, wxyz=g.object_quat())
 
-    # ---------------- GUI (single flat panel, no tabs) ----------------
+    # ---------------- GUI (single flat panel, language-toggleable) ----------------
     gui = server.gui
-    gui.add_markdown("拖拽物体上的手柄移动/旋转它；滑块调整姿态与尺寸。")
-    s_x = gui.add_slider("x [m]", g.center[0] - 0.08, g.center[0] + 0.08,
-                         0.0005, g.obj_target[0])
-    s_y = gui.add_slider("y [m]", g.center[1] - 0.08, g.center[1] + 0.08,
-                         0.0005, g.obj_target[1])
-    s_z = gui.add_slider("z [m]", g.center[2] - 0.08, g.center[2] + 0.08,
-                         0.0005, g.obj_target[2])
-    s_tx = gui.add_slider("tilt x [rad]", -2 * np.pi, 2 * np.pi, 0.02, g.tilt_x)
-    s_ty = gui.add_slider("tilt y [rad]", -2 * np.pi, 2 * np.pi, 0.02, g.tilt_y)
-    s_size = gui.add_slider("size [mm]", 15.0, 50.0, 0.5, g.radius * 1000)
+    ui: dict[str, object] = {}
+    lang = {"current": "zh"}
+
+    def tr(key: str) -> str:
+        return TEXTS[key][lang["current"]]
+
     def sync_sliders_from_state():
-        s_x.value, s_y.value, s_z.value = tuple(g.obj_target)
-        s_tx.value, s_ty.value = g.tilt_x, g.tilt_y
-        s_size.value = g.radius * 1000
+        ui["s_x"].value, ui["s_y"].value, ui["s_z"].value = tuple(g.obj_target)
+        ui["s_tx"].value, ui["s_ty"].value = g.tilt_x, g.tilt_y
+        ui["s_size"].value = g.radius * 1000
 
     def on_release(_):
         g.start_run()
@@ -434,15 +469,48 @@ def main():
         g.reset_placement()
         sync_sliders_from_state()
 
-    gui.add_button("释放抓取").on_click(on_release)
-    gui.add_button("回到摆位").on_click(on_back)
-    gui.add_button("复位").on_click(on_reset)
-    gui.add_markdown("### 抓取状态")
-    status_md = gui.add_markdown("—")
-    gui.add_markdown("### 各指接触力")
-    forces_md = gui.add_markdown("—")
-    gui.add_markdown("### 关节角度")
-    angles_md = gui.add_markdown("—")
+    def on_toggle_lang(_):
+        lang["current"] = "en" if lang["current"] == "zh" else "zh"
+        build_gui()
+
+    def build_gui():
+        old_vals = {k: ui[k].value for k in
+                    ("s_x", "s_y", "s_z", "s_tx", "s_ty", "s_size") if k in ui}
+        for handle in list(ui.values()):
+            handle.remove()
+        ui.clear()
+        gui.add_markdown(tr("hint"))
+        ui["s_x"] = gui.add_slider(tr("slider_x"), g.center[0] - 0.08,
+                                   g.center[0] + 0.08, 0.0005,
+                                   old_vals.get("s_x", g.obj_target[0]))
+        ui["s_y"] = gui.add_slider(tr("slider_y"), g.center[1] - 0.08,
+                                   g.center[1] + 0.08, 0.0005,
+                                   old_vals.get("s_y", g.obj_target[1]))
+        ui["s_z"] = gui.add_slider(tr("slider_z"), g.center[2] - 0.08,
+                                   g.center[2] + 0.08, 0.0005,
+                                   old_vals.get("s_z", g.obj_target[2]))
+        ui["s_tx"] = gui.add_slider(tr("slider_tx"), -2 * np.pi, 2 * np.pi, 0.02,
+                                    old_vals.get("s_tx", g.tilt_x))
+        ui["s_ty"] = gui.add_slider(tr("slider_ty"), -2 * np.pi, 2 * np.pi, 0.02,
+                                    old_vals.get("s_ty", g.tilt_y))
+        ui["s_size"] = gui.add_slider(tr("slider_size"), 15.0, 50.0, 0.5,
+                                      old_vals.get("s_size", g.radius * 1000))
+        ui["btn_release"] = gui.add_button(tr("btn_release"))
+        ui["btn_release"].on_click(on_release)
+        ui["btn_back"] = gui.add_button(tr("btn_back"))
+        ui["btn_back"].on_click(on_back)
+        ui["btn_reset"] = gui.add_button(tr("btn_reset"))
+        ui["btn_reset"].on_click(on_reset)
+        ui["btn_lang"] = gui.add_button(tr("btn_lang"))
+        ui["btn_lang"].on_click(on_toggle_lang)
+        gui.add_markdown(tr("sec_status"))
+        ui["status_md"] = gui.add_markdown("—")
+        gui.add_markdown(tr("sec_forces"))
+        ui["forces_md"] = gui.add_markdown("—")
+        gui.add_markdown(tr("sec_angles"))
+        ui["angles_md"] = gui.add_markdown("—")
+
+    build_gui()
 
     if args.auto_run:
         g.start_run()
@@ -470,8 +538,8 @@ def main():
     last_status = 0.0
 
     def slider_state():
-        return (s_x.value, s_y.value, s_z.value,
-                s_tx.value, s_ty.value, s_size.value)
+        return (ui["s_x"].value, ui["s_y"].value, ui["s_z"].value,
+                ui["s_tx"].value, ui["s_ty"].value, ui["s_size"].value)
 
     prev_slider = slider_state()
 
@@ -496,13 +564,13 @@ def main():
                 target = np.array(cur_slider[:3])
                 if user_drag:
                     target = gizmo_pos
-                    s_x.value, s_y.value, s_z.value = tuple(target)
+                    ui["s_x"].value, ui["s_y"].value, ui["s_z"].value = tuple(target)
                     g.tilt_x, g.tilt_y = tilts_from_quat(gizmo_quat_drag)
-                    s_tx.value, s_ty.value = g.tilt_x, g.tilt_y
+                    ui["s_tx"].value, ui["s_ty"].value = g.tilt_x, g.tilt_y
                 g.obj_target = target
-                g.tilt_x, g.tilt_y = float(s_tx.value), float(s_ty.value)
-                if abs(s_size.value / 1000 - g.radius) > 1e-9:
-                    g.set_radius(s_size.value / 1000)
+                g.tilt_x, g.tilt_y = float(ui["s_tx"].value), float(ui["s_ty"].value)
+                if abs(ui["s_size"].value / 1000 - g.radius) > 1e-9:
+                    g.set_radius(ui["s_size"].value / 1000)
                     obj_node.remove()
                     obj_node = scene.add_mesh_trimesh(
                         "/object", object_mesh(), position=g.obj_target,
@@ -523,12 +591,12 @@ def main():
                 adr = g.model.jnt_qposadr[g.obj_joint]
                 dadr = g.model.jnt_dofadr[g.obj_joint]
                 if any(slider_changed):
-                    g.tilt_x, g.tilt_y = float(s_tx.value), float(s_ty.value)
+                    g.tilt_x, g.tilt_y = float(ui["s_tx"].value), float(ui["s_ty"].value)
                     g.data.qpos[adr:adr + 3] = np.asarray(cur_slider[:3])
                     g.data.qpos[adr + 3:adr + 7] = g.object_quat()
                     g.data.qvel[dadr:dadr + 6] = 0.0
-                    if abs(s_size.value / 1000 - g.radius) > 1e-9:
-                        g.set_radius(s_size.value / 1000)
+                    if abs(ui["s_size"].value / 1000 - g.radius) > 1e-9:
+                        g.set_radius(ui["s_size"].value / 1000)
                         obj_node.remove()
                         obj_node = scene.add_mesh_trimesh(
                             "/object", object_mesh(), position=np.asarray(cur_slider[:3]),
@@ -548,7 +616,7 @@ def main():
                                        -SPRING_FMAX, SPRING_FMAX)
                         # keep the position sliders in sync so a later slider
                         # nudge starts from the object's current pose
-                        s_x.value, s_y.value, s_z.value = tuple(gizmo_pos)
+                        ui["s_x"].value, ui["s_y"].value, ui["s_z"].value = tuple(gizmo_pos)
                     else:
                         gizmo.position = obj_pos
                     if user_drag and quat_angle(g.data.xquat[g.obj_body],
@@ -558,7 +626,7 @@ def main():
                         g.data.qvel[dadr + 3:dadr + 6] = 0.0
                         gizmo.wxyz = gizmo_quat_drag
                         g.tilt_x, g.tilt_y = tilts_from_quat(gizmo_quat_drag)
-                        s_tx.value, s_ty.value = g.tilt_x, g.tilt_y
+                        ui["s_tx"].value, ui["s_ty"].value = g.tilt_x, g.tilt_y
                     g.step(pull=pull)
                     obj_pos = g.data.xpos[g.obj_body]
                     obj_vel = (obj_pos - prev_obj_pos) / FRAME_DT
@@ -584,17 +652,19 @@ def main():
             if g.elapsed - last_status > 0.25:
                 last_status = g.elapsed
                 cfg = g.hand_cfg()
-                alines = ["| finger | 关节角 (deg) |", "| --- | --- |"]
+                alines = [f"| {tr('col_finger')} | {tr('joints_deg')} |", "| --- | --- |"]
                 for chain in g.hand.chains:
                     names = [j.name for j in chain.joints if j.type == "revolute"]
                     alines.append(
                         "| " + chain.name + " | "
                         + " ".join(f"{np.degrees(cfg[n]):+6.1f}" for n in names) + " |"
                     )
-                angles_md.content = "\n".join(alines)
+                ui["angles_md"].content = "\n".join(alines)
 
                 forces = g.finger_forces()
-                flines = ["| finger | 法向 N | 摩擦 N | 接触 |", "| --- | --- | --- | --- |"]
+                flines = [f"| {tr('col_finger')} | {tr('col_normal')} | "
+                          f"{tr('col_friction')} | {tr('col_contacts')} |",
+                          "| --- | --- | --- | --- |"]
                 total = [0.0, 0.0, 0]
                 for ch in g.hand.chains:
                     nrm, frc, ncon = forces.get(ch.name, (0.0, 0.0, 0))
@@ -602,26 +672,29 @@ def main():
                     total[0] += nrm
                     total[1] += frc
                     total[2] += ncon
-                flines.append(f"| **合计** | **{total[0]:.2f}** | **{total[1]:.2f}** | **{total[2]}** |")
-                forces_md.content = "\n".join(flines)
+                flines.append(f"| **{tr('total')}** | **{total[0]:.2f}** | "
+                              f"**{total[1]:.2f}** | **{total[2]}** |")
+                ui["forces_md"].content = "\n".join(flines)
 
                 if g.adjusting:
-                    status_md.content = (
-                        f"**摆位中**（物体已钉住）\n\n"
-                        f"- 位置 ({g.obj_target[0]:+.3f}, {g.obj_target[1]:+.3f}, "
+                    ui["status_md"].content = (
+                        f"**{tr('adjusting')}**\n\n"
+                        f"- {tr('pos')} ({g.obj_target[0]:+.3f}, {g.obj_target[1]:+.3f}, "
                         f"{g.obj_target[2]:+.3f})\n"
-                        f"- 半径 {g.radius * 1000:.1f} mm\n"
-                        f"- 倾斜 x {np.degrees(g.tilt_x):+.0f}° / y {np.degrees(g.tilt_y):+.0f}°"
+                        f"- {tr('radius')} {g.radius * 1000:.1f} mm\n"
+                        f"- {tr('tilt')} x {np.degrees(g.tilt_x):+.0f}° / "
+                        f"y {np.degrees(g.tilt_y):+.0f}°"
                     )
                 else:
                     drift = float(np.linalg.norm(
                         g.data.xpos[g.obj_body] - g.obj_target)) * 1000
                     nc = g.contact_count()
                     held = drift < 75 and nc >= 3
-                    status_md.content = (
-                        f"| t | 漂移 | 接触 | 状态 |\n| --- | --- | --- | --- |\n"
+                    ui["status_md"].content = (
+                        f"| {tr('col_t')} | {tr('col_drift')} | {tr('col_contacts')} | "
+                        f"{tr('col_state')} |\n| --- | --- | --- | --- |\n"
                         f"| {g.elapsed:.1f} s | {drift:.1f} mm | {nc} | "
-                        f"{'已握持' if held else '未握持'} |"
+                        f"{tr('held' if held else 'not_held')} |"
                     )
                     print(f"\r[sim_web] t={g.elapsed:4.1f}s drift={drift:5.1f}mm "
                           f"contacts={nc}  ", end="", flush=True)
