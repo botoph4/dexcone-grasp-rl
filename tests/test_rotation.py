@@ -64,7 +64,6 @@ def test_tilts_from_quat_roundtrip():
         tx2, ty2 = tilts_from_quat(quat_of(tx, ty))
         # same axis direction is the criterion (rotation about the axis is
         # invisible for a cylinder)
-        from p24grasp.kinematics.ik import AXIS
         axis1 = np.array([np.sin(ty), -np.sin(tx) * np.cos(ty), np.cos(tx) * np.cos(ty)])
         axis2 = np.array([np.sin(ty2), -np.sin(tx2) * np.cos(ty2), np.cos(tx2) * np.cos(ty2)])
         assert np.linalg.norm(axis1 - axis2) < 1e-9

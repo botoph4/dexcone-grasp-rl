@@ -50,3 +50,41 @@ p24grasp = ["assets/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.pylint.main]
+# 研究代码的务实 lint 门槛：关闭与可维护性无关/易误报的检查，
+# 保留真正的错误与警告（undefined-variable 等）
+[tool.pylint.messages_control]
+disable = [
+    "missing-module-docstring",
+    "missing-class-docstring",
+    "missing-function-docstring",
+    "too-few-public-methods",
+    "too-many-arguments",
+    "too-many-locals",
+    "too-many-instance-attributes",
+    "too-many-branches",
+    "too-many-statements",
+    "invalid-name",
+    "fixme",
+    "line-too-long",
+    "broad-exception-caught",
+    "duplicate-code",
+    "import-error",           # 可选依赖（torch/SB3/viser/pyroki）
+    "no-member",              # numpy/mujoco 的动态成员误报
+    "no-name-in-module",
+    "redefined-outer-name",   # pytest fixture 惯用法
+    "global-statement",
+    "unused-argument",
+    "consider-using-f-string",
+    "unnecessary-lambda",
+    "protected-access",
+    "attribute-defined-outside-init",
+    "used-before-assignment",
+    "wrong-import-position",   # 测试文件先加 sys.path 再导入的引导模式
+    "import-outside-toplevel", # 惰性导入（打破可选依赖环）是刻意设计
+    "cyclic-import",           # paths <-> mjcf 的循环由惰性导入在运行时断开
+]
+
+[tool.pylint.format]
+max-line-length = 100
