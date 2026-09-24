@@ -49,7 +49,9 @@ $\overline{|\cdot|}$ 表示对 16 个执行器取平均。
 
 $$
 \text{掉落：}\ z < z_c - 0.05\ \text{或}\ d > 0.12 \ \Rightarrow\ -20\ \text{并提前结束}
-$$$$
+$$
+
+$$
 \text{成功：}\ d < 0.075,\ v < 0.05\ \text{m/s},\ n \ge 3 \ \Rightarrow\ +20
 $$
 
