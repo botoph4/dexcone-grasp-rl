@@ -405,11 +405,9 @@ def main():
     gizmo = scene.add_transform_controls("/gizmo", scale=0.14,
                                          position=g.obj_target, wxyz=g.object_quat())
 
-    # ---------------- GUI ----------------
+    # ---------------- GUI (single flat panel, no tabs) ----------------
     gui = server.gui
-    tabs = gui.add_tab_group()
-    tab_place = tabs.add_tab("摆位")
-    gui.add_markdown("拖拽物体上的手柄移动它；滑块调整姿态与尺寸。")
+    gui.add_markdown("拖拽物体上的手柄移动/旋转它；滑块调整姿态与尺寸。")
     s_x = gui.add_slider("x [m]", g.center[0] - 0.08, g.center[0] + 0.08,
                          0.0005, g.obj_target[0])
     s_y = gui.add_slider("y [m]", g.center[1] - 0.08, g.center[1] + 0.08,
@@ -437,12 +435,13 @@ def main():
         sync_sliders_from_state()
 
     gui.add_button("释放抓取").on_click(on_release)
-    tab_run = tabs.add_tab("抓取")
-    status_md = gui.add_markdown("—")
-    forces_md = gui.add_markdown("—")
     gui.add_button("回到摆位").on_click(on_back)
     gui.add_button("复位").on_click(on_reset)
-    tab_angles = tabs.add_tab("关节角度")
+    gui.add_markdown("### 抓取状态")
+    status_md = gui.add_markdown("—")
+    gui.add_markdown("### 各指接触力")
+    forces_md = gui.add_markdown("—")
+    gui.add_markdown("### 关节角度")
     angles_md = gui.add_markdown("—")
 
     if args.auto_run:
