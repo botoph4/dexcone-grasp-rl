@@ -7,9 +7,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from p24grasp.env.grasp import EPISODE_STEPS, GraspEnv
+# grasp.py imports gymnasium at module level, so skip before importing it
+pytest.importorskip("gymnasium")
+pytest.importorskip("stable_baselines3")
 
-sb3 = pytest.importorskip("stable_baselines3")
+from p24grasp.env.grasp import EPISODE_STEPS, GraspEnv  # noqa: E402
 from stable_baselines3.common.env_checker import check_env  # noqa: E402
 
 

@@ -1,5 +1,7 @@
 # P24 手抓取仿真与强化学习
 
+[![CI](https://github.com/botoph4/dexcone-grasp-rl/actions/workflows/ci.yml/badge.svg)](https://github.com/botoph4/dexcone-grasp-rl/actions)
+
 P24 假肢手的 MuJoCo 抓取仿真项目：几何 IK 与 PyRoki 运动学求解、PPO/SAC 抓取
 策略训练、桌面/网页双端交互查看器（可拖拽物体看握持反应）。
 
@@ -78,6 +80,24 @@ python scripts/eval_grasp_rl.py --shape cylinder --algo both --episodes 50 --med
 ```bash
 python -m pytest tests/
 ```
+
+## GitHub Actions CI
+
+`.github/workflows/ci.yml` 定义了一条 CI 流水线，**推送到 GitHub 后自动运行**：
+
+- **触发时机**：push 到 `main`、任何 pull request，或在 GitHub 仓库的
+  Actions 页面手动点击 "Run workflow"（`workflow_dispatch`）
+- **矩阵**：Python 3.10 与 3.12，ubuntu-latest
+- **内容**：安装 `.[test,rl]` 依赖 → 运行 `pytest tests/`（含环境检查、
+  抓取保持测试；PyRoki 相关测试因依赖未装自动跳过）
+
+查看方式：仓库页 → **Actions** 标签页；每次提交旁也会有 ✓/✗ 状态标记。
+本地想先预演可用 [act](https://github.com/nektos/act)：
+`act pull_request -j test`。
+
+> macOS 本机不需要 CI 的 torch 说明：CI 跑在 ubuntu 上，pip 的 torch wheel
+> 没有 macOS+conda 的 libomp 冲突问题，所以 CI 可以直接装 `.[rl]`；
+> 本机（macOS）安装 RL 依赖仍需按上文用 conda-forge 的 torch。
 
 ## 结果摘要
 

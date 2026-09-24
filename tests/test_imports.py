@@ -18,7 +18,13 @@ MODULES = [
 
 
 def test_import_all():
+    import pytest
     for name in MODULES:
+        if name in ("p24grasp.env.grasp", "p24grasp.viewers.desktop",
+                    "p24grasp.viewers.web"):
+            # these import gymnasium / viser at module level
+            if name.startswith("p24grasp.env"):
+                pytest.importorskip("gymnasium")
         importlib.import_module(name)
 
 
