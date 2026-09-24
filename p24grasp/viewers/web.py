@@ -60,6 +60,48 @@ SPRING_D = 8.0       # N/(m/s)
 SPRING_FMAX = 10.0   # N
 SPRING_ENGAGE = 0.008  # m - beyond this gap the gizmo is being dragged
 
+# rotational spring: aligning the object to the gizmo's rotated orientation
+ROT_K = 0.05    # N*m/rad
+ROT_D = 0.0015  # N*m/(rad/s)
+ROT_MAX = 0.03  # N*m
+ROT_ALIGN = np.radians(2.0)  # rad - below this the gizmo snaps to the object
+
+
+def quat_angle(q1, q2) -> float:
+    """Angular distance [rad] between two wxyz quaternions."""
+    dot = abs(float(np.clip(np.dot(np.asarray(q1), np.asarray(q2)), -1.0, 1.0)))
+    return 2.0 * np.arccos(dot)
+
+
+def rotation_torque(q_obj, q_gizmo, k=ROT_K, omega=None, d=ROT_D,
+                    max_tau=ROT_MAX):
+    """World-frame torque that aligns the object quaternion to the gizmo's.
+
+    ``q_obj`` / ``q_gizmo`` are wxyz world orientations; the torque is
+    k * (SO(3) log of q_gizmo * q_obj^-1), optionally with angular-velocity
+    damping, clamped to ``max_tau``.
+    """
+    w1, x1, y1, z1 = q_gizmo
+    w2, x2, y2, z2 = q_obj
+    q_rel = np.array([
+        w1 * w2 + x1 * x2 + y1 * y2 + z1 * z2,
+        -w1 * x2 + x1 * w2 - y1 * z2 + z1 * y2,
+        -w1 * y2 + x1 * z2 + y1 * w2 - z1 * x2,
+        -w1 * z2 - x1 * y2 + y1 * x2 + z1 * w2,
+    ])  # q_gizmo * conj(q_obj)
+    w, x, y, z = q_rel
+    w = float(np.clip(w, -1.0, 1.0))
+    ang = 2.0 * np.arccos(abs(w))
+    if ang < 1e-4:
+        return np.zeros(3)
+    axis = np.array([x, y, z]) / np.sin(ang / 2.0)
+    if w < 0.0:
+        axis = -axis
+    tau = axis * (k * ang)
+    if omega is not None:
+        tau = tau - d * np.asarray(omega)
+    return np.clip(tau, -max_tau, max_tau)
+
 # auto-recover: if the object falls this far from the clasp it is re-placed.
 # Besides the UX, a free-falling object left running is the state in which a
 # rare MuJoCo constraint-solver crash (segfault inside mj_fwdConstraint) was
@@ -220,7 +262,32 @@ class WebGrasp:
                 gids.add(c.geom1)
         return len(gids)
 
-    def step(self, pull: np.ndarray | None = None):
+    def finger_forces(self) -> dict[str, tuple[float, float, int]]:
+        """Per-finger (normal force [N], friction force [N], #contacts).
+
+        Normal force is the component along the contact frame's normal axis,
+        friction the magnitude of the two tangential components.
+        """
+        m, d = self.model, self.data
+        out = {ch.name: [0.0, 0.0, 0] for ch in self.hand.chains}
+        buf = np.zeros(6)
+        for i in range(d.ncon):
+            c = d.contact[i]
+            if c.geom1 != self.obj_gid and c.geom2 != self.obj_gid:
+                continue
+            other = c.geom2 if c.geom1 == self.obj_gid else c.geom1
+            name = mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, other) or ""
+            finger = next((ch.name for ch in self.hand.chains
+                           if name.startswith(ch.name + "_")), None)
+            if finger is None:
+                continue
+            mujoco.mj_contactForce(m, d, i, buf)
+            out[finger][0] += abs(float(buf[0]))
+            out[finger][1] += float(np.linalg.norm(buf[1:3]))
+            out[finger][2] += 1
+        return out
+
+    def step(self, pull: np.ndarray | None = None, torque: np.ndarray | None = None):
         m, d = self.model, self.data
         nsub = max(1, int(round(FRAME_DT / m.opt.timestep)))
         dt = m.opt.timestep
@@ -254,6 +321,8 @@ class WebGrasp:
             d.xfrc_applied[:] = 0.0
             if pull is not None:
                 d.xfrc_applied[self.obj_body, :3] = pull
+            if torque is not None:
+                d.xfrc_applied[self.obj_body, 3:6] = torque
             mujoco.mj_step(m, d)
             self.elapsed += m.opt.timestep
 
@@ -353,6 +422,7 @@ def main():
     gui.add_button("释放抓取").on_click(on_release)
     tab_run = tabs.add_tab("抓取")
     status = gui.add_text("status", "—")
+    forces_text = gui.add_text("forces", "—")
     gui.add_button("回到摆位").on_click(on_back)
     gui.add_button("复位").on_click(on_reset)
     tab_angles = tabs.add_tab("关节角度")
@@ -366,6 +436,7 @@ def main():
 
     # ---------------- main loop ----------------
     prev_gizmo_pos = np.asarray(gizmo.position, dtype=float)
+    prev_gizmo_quat = np.asarray(gizmo.wxyz, dtype=float)
     obj_vel = np.zeros(3)
     prev_obj_pos = g.data.xpos[g.obj_body].copy()
     last_status = 0.0
@@ -433,6 +504,8 @@ def main():
                     prev_obj_pos = g.data.xpos[g.obj_body].copy()
                 else:
                     obj_pos = g.data.xpos[g.obj_body]
+                    gizmo_quat = np.asarray(gizmo.wxyz, dtype=float)
+                    obj_quat = np.asarray(g.data.xquat[g.obj_body], dtype=float)
                     delta = gizmo_pos - obj_pos
                     pull = np.zeros(3)
                     if float(np.linalg.norm(delta)) > SPRING_ENGAGE:
@@ -443,8 +516,19 @@ def main():
                         s_x.value, s_y.value, s_z.value = tuple(gizmo_pos)
                     else:
                         gizmo.position = obj_pos
-                        gizmo.wxyz = g.data.xquat[g.obj_body]
-                    g.step(pull=pull)
+                    # rotational spring: dragging the gizmo's rotation rings
+                    # must rotate the object, not get snapped back each frame
+                    rot_dragged = quat_angle(prev_gizmo_quat, gizmo_quat) > 1e-3
+                    torque = np.zeros(3)
+                    if rot_dragged or quat_angle(obj_quat, gizmo_quat) > ROT_ALIGN:
+                        torque = rotation_torque(
+                            obj_quat, gizmo_quat,
+                            omega=g.data.cvel[g.obj_body, :3],
+                        )
+                    else:
+                        # aligned and idle: let the gizmo ride the object
+                        gizmo.wxyz = obj_quat
+                    g.step(pull=pull, torque=torque)
                     obj_pos = g.data.xpos[g.obj_body]
                     obj_vel = (obj_pos - prev_obj_pos) / FRAME_DT
                     prev_obj_pos = obj_pos
@@ -463,6 +547,7 @@ def main():
                     obj_vel[:] = 0.0
 
             prev_gizmo_pos = np.asarray(gizmo.position, dtype=float)
+            prev_gizmo_quat = np.asarray(gizmo.wxyz, dtype=float)
             prev_slider = cur_slider
 
             if g.elapsed - last_status > 0.25:
@@ -476,6 +561,15 @@ def main():
                         + "  ".join(f"{np.degrees(cfg[n]):+6.1f}" for n in names)
                     )
                 angles_text.value = "deg\n" + "\n".join(lines)
+                forces = g.finger_forces()
+                flines = [f"{'finger':<8}{'法向 N':>9}{'摩擦 N':>9}{'接触':>6}"]
+                total = [0.0, 0.0, 0]
+                for ch in g.hand.chains:
+                    nrm, frc, ncon = forces.get(ch.name, (0.0, 0.0, 0))
+                    flines.append(f"{ch.name:<8}{nrm:>9.2f}{frc:>9.2f}{ncon:>6d}")
+                    total[0] += nrm; total[1] += frc; total[2] += ncon
+                flines.append(f"{'合计':<8}{total[0]:>9.2f}{total[1]:>9.2f}{total[2]:>6d}")
+                forces_text.value = "\n".join(flines)
                 if g.adjusting:
                     status.value = (
                         f"摆位中（物体已钉住）\n"
