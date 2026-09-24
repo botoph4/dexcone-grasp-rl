@@ -476,10 +476,15 @@ def main():
     def build_gui():
         old_vals = {k: ui[k].value for k in
                     ("s_x", "s_y", "s_z", "s_tx", "s_ty", "s_size") if k in ui}
+        # every handle - including the hint and the section-header markdowns -
+        # must live in ui, otherwise a language switch cannot remove the old
+        # text and the panel accumulates a copy per toggle
         for handle in list(ui.values()):
             handle.remove()
         ui.clear()
-        gui.add_markdown(tr("hint"))
+        ui["btn_lang"] = gui.add_button(tr("btn_lang"))
+        ui["btn_lang"].on_click(on_toggle_lang)
+        ui["hint_md"] = gui.add_markdown(tr("hint"))
         ui["s_x"] = gui.add_slider(tr("slider_x"), g.center[0] - 0.08,
                                    g.center[0] + 0.08, 0.0005,
                                    old_vals.get("s_x", g.obj_target[0]))
@@ -501,13 +506,11 @@ def main():
         ui["btn_back"].on_click(on_back)
         ui["btn_reset"] = gui.add_button(tr("btn_reset"))
         ui["btn_reset"].on_click(on_reset)
-        ui["btn_lang"] = gui.add_button(tr("btn_lang"))
-        ui["btn_lang"].on_click(on_toggle_lang)
-        gui.add_markdown(tr("sec_status"))
+        ui["sec_status_md"] = gui.add_markdown(tr("sec_status"))
         ui["status_md"] = gui.add_markdown("—")
-        gui.add_markdown(tr("sec_forces"))
+        ui["sec_forces_md"] = gui.add_markdown(tr("sec_forces"))
         ui["forces_md"] = gui.add_markdown("—")
-        gui.add_markdown(tr("sec_angles"))
+        ui["sec_angles_md"] = gui.add_markdown(tr("sec_angles"))
         ui["angles_md"] = gui.add_markdown("—")
 
     build_gui()
