@@ -30,6 +30,8 @@ pip install -e ".[rl,web,test]"  # + RL 训练 / 网页查看器 / 测试
 ├── scripts/                   # 薄启动脚本（兼容 python scripts/xxx.py 用法）
 ├── tests/                     # pytest 冒烟测试
 ├── docs/FINDINGS.md           # 根因分析与实测结论（长文）
+├── docs/FRICTION_CONE.md      # 摩擦锥计算公式与防滑抓握求解
+├── docs/RL.md                 # 强化学习在项目中的作用（MDP/奖励/结果）
 ├── build/                     # 生成物：hand.xml、场景 XML、缓存（gitignore）
 └── outputs/                   # 产物：render/ eval/ antislip/ runs/（gitignore）
 ```
@@ -50,8 +52,8 @@ python scripts/sim_web.py                        # http://localhost:8080
 python scripts/sim_web.py --shape sphere --auto-run
 ```
 
-浏览器里：拖拽手柄（摆位=钉住移动 / 抓握=弹簧力拉拽）、「摆位」「抓取」「关节角度」
-三个标签页的滑块与实时状态。
+浏览器里：拖拽手柄（摆位=钉住移动 / 抓握=弹簧力拉拽）、滑块、实时状态与
+各指接触力/关节角度面板，中英文可切换。
 
 ### 几何 IK 演示与 PyRoki 后端
 
@@ -90,6 +92,14 @@ python -m pytest tests/
 的物体会在 ~14 s 内被挤出，见 docs/FINDINGS.md 第 10 节——这是指尖可达性的
 几何限制）。球体需要策略。关键设计结论（物体轴向必须垂直于手指屈曲平面、
 指节胶囊碰撞体、接触位掩码、IK 目标半径符号等）见 [docs/FINDINGS.md](docs/FINDINGS.md)。
+
+## 文档
+
+| 文档 | 内容 |
+| --- | --- |
+| [docs/FINDINGS.md](docs/FINDINGS.md) | 根因分析：轴向、碰撞体、接触位掩码、mimic equality、挤出机理等 10 个结论 |
+| [docs/FRICTION_CONE.md](docs/FRICTION_CONE.md) | 摩擦锥计算公式、多面体近似、防滑抓握求解管线 |
+| [docs/RL.md](docs/RL.md) | RL 的作用：MDP 定义、奖励公式、PPO/SAC 对比、策略在项目中的位置 |
 
 ## 已知限制
 
