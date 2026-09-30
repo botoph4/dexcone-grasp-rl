@@ -118,10 +118,13 @@ def compute_calibration(
     span_raw = wrap_angle(open_lateral - together_lateral)
     span_raw = np.where(np.abs(span_raw) < 1e-3, 1e-3, span_raw)
     gains = (hi - lo) / span_raw
+    # The sign of the raw span flips for the ulnar fingers (ring/little):
+    # preserve it -- only the MAGNITUDE is clipped.
+    gains = np.sign(gains) * np.clip(np.abs(gains), 0.1, 3.0)
     offsets = together_lateral - lo / gains
     lateral = LateralCalibration(
         offsets_deg=tuple(float(value) for value in np.rad2deg(offsets)),
-        gains=tuple(float(value) for value in np.clip(gains, 0.1, 3.0)),
+        gains=tuple(float(value) for value in gains),
         limits_deg=DEFAULT_LIMITS_DEG,
     )
 

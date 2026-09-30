@@ -120,3 +120,25 @@ def test_calibrated_lateral_starts_at_the_together_mapping():
     qpos, _ = estimator.update(np.full((21, 3), np.nan))
     lo = np.deg2rad(np.asarray(DEFAULT_LIMITS_DEG, dtype=np.float64))[:, 0]
     np.testing.assert_allclose(qpos, lo, atol=1e-9)
+
+
+def test_ulnar_fingers_keep_negative_gains():
+    # ring/little raw angles DECREASE from open to together (the derotation
+    # sign flips for the ulnar fingers): the gains must stay negative so
+    # the two-point mapping still sends the endpoints onto the limits
+    together = np.array([-0.9, -0.4, 0.5, 0.8])
+    cal = compute_calibration(
+        open_flexion=np.zeros((5, 3)),
+        open_lateral=np.array([-0.6, -0.3, 0.3, 0.4]),
+        together_lateral=together,
+        fist_flexion=np.full((5, 3), 90.0),
+        reach_m=0.16,
+    ).lateral
+    assert cal.gains[2] < 0.0  # ring span is negative -> negative gain
+    assert cal.gains[3] < 0.0  # little
+    assert abs(cal.gains[2]) >= 0.1
+    limits = np.deg2rad(np.asarray(DEFAULT_LIMITS_DEG, dtype=np.float64))
+    for finger in range(4):
+        lo_v = cal.gains[finger] * wrap_angle(
+            np.array([together[finger]]) - np.array([cal.offsets_rad[finger]]))[0]
+        np.testing.assert_allclose(lo_v, limits[finger, 0], atol=1e-6)
