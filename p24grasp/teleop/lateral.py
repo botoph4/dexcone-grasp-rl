@@ -42,6 +42,11 @@ PALM_FIT_INDICES = (0, 5, 9, 13, 17)  # wrist + four MCPs
 # neighbour, so inward adduction is clamped while outward abduction keeps
 # the full range.
 DEFAULT_LIMITS_DEG = ((-15.0, 5.0), (-15.0, 15.0), (-15.0, 15.0), (-15.0, 0.0))
+# Robot joint_2 direction that adducts each finger toward its neighbour
+# (index -> middle, middle/ring -> index side, little -> ring).  The guided
+# calibration maps the user's together gesture onto these values.
+INWARD_LIMITS_DEG = (5.0, 15.0, 15.0, 0.0)
+OUTWARD_LIMITS_DEG = (-15.0, -15.0, -15.0, -15.0)
 
 # Defaults from the reference workspace configs (lateral_common.yml).
 DEFAULT_CALIBRATION_PATH = Path.home() / ".cache" / "p24grasp" / "lateral_calibration.json"
@@ -211,9 +216,8 @@ class LateralEstimator:
         if not self._auto_calibrate:
             # With an explicit (loaded) calibration the lateral joints start
             # at the user's natural neutral spread -- the together-gesture
-            # mapping (the two-point fit sends the together pose to the
-            # lower limits) -- instead of zero.
-            self._value = self.calibration.limits_rad[:, 0].copy()
+            # mapping (adducted) -- instead of zero.
+            self._value = np.deg2rad(INWARD_LIMITS_DEG).copy()
         self._collect_frames = collect_frames
         self._calibration_path = (
             Path(calibration_path) if calibration_path is not None

@@ -30,6 +30,8 @@ import numpy as np
 
 from p24grasp.teleop.lateral import (
     DEFAULT_LIMITS_DEG,
+    INWARD_LIMITS_DEG,
+    OUTWARD_LIMITS_DEG,
     LateralCalibration,
     LateralEstimator,
     wrap_angle,
@@ -125,16 +127,18 @@ def compute_calibration(
     reach_m: float,
 ) -> HandCalibration:
     """Fit the lateral two-point mapping and the per-joint flexion gains."""
-    # Lateral: [together, open] raw angles -> robot [lo, hi] limits exactly.
-    limits = np.deg2rad(np.asarray(DEFAULT_LIMITS_DEG, dtype=np.float64))
-    lo, hi = limits[:, 0], limits[:, 1]
-    span_raw = wrap_angle(open_lateral - together_lateral)
+    # Lateral: map the PHYSICAL gesture direction onto the robot: the
+    # together pose (adducted) goes to the inward limits and the open pose
+    # (spread) to the outward limits.  The derotation raw sign convention
+    # differs per finger, so the fit direction follows the measured span
+    # (a negative span yields a negative gain).
+    inward = np.deg2rad(np.asarray(INWARD_LIMITS_DEG, dtype=np.float64))
+    outward = np.deg2rad(np.asarray(OUTWARD_LIMITS_DEG, dtype=np.float64))
+    span_raw = wrap_angle(together_lateral - open_lateral)
     span_raw = np.where(np.abs(span_raw) < 1e-3, 1e-3, span_raw)
-    gains = (hi - lo) / span_raw
-    # The sign of the raw span flips for the ulnar fingers (ring/little):
-    # preserve it -- only the MAGNITUDE is clipped.
+    gains = (inward - outward) / span_raw
     gains = np.sign(gains) * np.clip(np.abs(gains), 0.1, 3.0)
-    offsets = together_lateral - lo / gains
+    offsets = together_lateral - inward / gains
     lateral = LateralCalibration(
         offsets_deg=tuple(float(value) for value in np.rad2deg(offsets)),
         gains=tuple(float(value) for value in gains),

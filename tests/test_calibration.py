@@ -13,15 +13,18 @@ from p24grasp.teleop.calibration import (  # noqa: E402
 )
 from p24grasp.teleop.lateral import (  # noqa: E402
     DEFAULT_LIMITS_DEG,
+    INWARD_LIMITS_DEG,
+    OUTWARD_LIMITS_DEG,
     LateralEstimator,
     wrap_angle,
 )
 
 
 def test_two_point_lateral_maps_endpoints_to_limits():
-    # together at raw -0.35 rad, open spread at +0.15 rad (some finger)
-    together = np.array([-0.35, -0.30, 0.20, 0.40])
-    open_raw = np.array([0.15, 0.20, 0.70, 0.85])
+    # together at raw -0.35 rad, open spread at +0.15 rad (radial fingers);
+    # ring/little have the reversed raw direction (together > open)
+    together = np.array([-0.35, -0.30, 0.40, 0.80])
+    open_raw = np.array([0.15, 0.20, 0.20, 0.40])
     cal = compute_calibration(
         open_flexion=np.zeros((5, 3)),
         open_lateral=open_raw,
@@ -29,15 +32,15 @@ def test_two_point_lateral_maps_endpoints_to_limits():
         fist_flexion=np.full((5, 3), 90.0),
         reach_m=0.16,
     ).lateral
-    limits = np.deg2rad(np.asarray(DEFAULT_LIMITS_DEG, dtype=np.float64))
-    lo, hi = limits[:, 0], limits[:, 1]
+    inward = np.deg2rad(np.asarray(INWARD_LIMITS_DEG, dtype=np.float64))
+    outward = np.deg2rad(np.asarray(OUTWARD_LIMITS_DEG, dtype=np.float64))
     for finger in range(4):
-        mapped_lo = cal.gains[finger] * wrap_angle(
+        mapped_together = cal.gains[finger] * wrap_angle(
             np.array([together[finger]]) - np.array([cal.offsets_rad[finger]]))[0]
-        mapped_hi = cal.gains[finger] * wrap_angle(
+        mapped_open = cal.gains[finger] * wrap_angle(
             np.array([open_raw[finger]]) - np.array([cal.offsets_rad[finger]]))[0]
-        np.testing.assert_allclose(mapped_lo, lo[finger], atol=1e-6)
-        np.testing.assert_allclose(mapped_hi, hi[finger], atol=1e-6)
+        np.testing.assert_allclose(mapped_together, inward[finger], atol=1e-6)
+        np.testing.assert_allclose(mapped_open, outward[finger], atol=1e-6)
 
 
 def test_flexion_gains_map_measured_range_to_robot_rom():
@@ -116,32 +119,34 @@ def test_calibrated_lateral_starts_at_the_together_mapping():
         calibration_path="/nonexistent/cal.json",
     )
     # before any confident observation the output is the calibrated neutral
-    # (the two-point fit maps the together gesture to the lower limits)
+    # (the two-point fit maps the together gesture to the inward limits)
     qpos, _ = estimator.update(np.full((21, 3), np.nan))
-    lo = np.deg2rad(np.asarray(DEFAULT_LIMITS_DEG, dtype=np.float64))[:, 0]
-    np.testing.assert_allclose(qpos, lo, atol=1e-9)
+    inward = np.deg2rad(np.asarray(INWARD_LIMITS_DEG, dtype=np.float64))
+    np.testing.assert_allclose(qpos, inward, atol=1e-9)
 
 
-def test_ulnar_fingers_keep_negative_gains():
-    # ring/little raw angles DECREASE from open to together (the derotation
-    # sign flips for the ulnar fingers): the gains must stay negative so
-    # the two-point mapping still sends the endpoints onto the limits
-    together = np.array([-0.9, -0.4, 0.5, 0.8])
+def test_ulnar_fingers_reversed_raw_direction():
+    # ring/little raw angles are LARGER for together than for open (the
+    # derotation sign convention flips on the ulnar side); the fit must
+    # still send together -> inward and open -> outward physically
+    together = np.array([-0.9, -0.6, 0.5, 0.8])
     cal = compute_calibration(
         open_flexion=np.zeros((5, 3)),
-        open_lateral=np.array([-0.6, -0.3, 0.3, 0.4]),
+        open_lateral=np.array([-0.6, -0.2, 0.3, 0.4]),
         together_lateral=together,
         fist_flexion=np.full((5, 3), 90.0),
         reach_m=0.16,
     ).lateral
-    assert cal.gains[2] < 0.0  # ring span is negative -> negative gain
-    assert cal.gains[3] < 0.0  # little
-    assert abs(cal.gains[2]) >= 0.1
-    limits = np.deg2rad(np.asarray(DEFAULT_LIMITS_DEG, dtype=np.float64))
+    inward = np.deg2rad(np.asarray(INWARD_LIMITS_DEG, dtype=np.float64))
+    outward = np.deg2rad(np.asarray(OUTWARD_LIMITS_DEG, dtype=np.float64))
     for finger in range(4):
-        lo_v = cal.gains[finger] * wrap_angle(
+        mapped_together = cal.gains[finger] * wrap_angle(
             np.array([together[finger]]) - np.array([cal.offsets_rad[finger]]))[0]
-        np.testing.assert_allclose(lo_v, limits[finger, 0], atol=1e-6)
+        mapped_open = cal.gains[finger] * wrap_angle(
+            np.array([-0.6 if finger == 0 else -0.2 if finger == 1 else 0.3
+                      if finger == 2 else 0.4]) - np.array([cal.offsets_rad[finger]]))[0]
+        np.testing.assert_allclose(mapped_together, inward[finger], atol=1e-6)
+        np.testing.assert_allclose(mapped_open, outward[finger], atol=1e-6)
 
 
 def test_reach_nan_falls_back_to_default():
