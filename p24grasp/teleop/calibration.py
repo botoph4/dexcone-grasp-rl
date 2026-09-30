@@ -241,7 +241,7 @@ class GuidedCalibration:
                     now = time.monotonic()
                     if now - last_report >= 1.0:
                         last_report = now
-                        med = np.nanmedian(np.asarray(flexion_list), axis=0)
+                        med = _nanmedian_safe(np.asarray(flexion_list), axis=0)
                         print(
                             f"[calibrate]   进行中 MCP="
                             f"{np.round(med[1:, 0], 0).tolist()} "
@@ -256,7 +256,7 @@ class GuidedCalibration:
                     reach_list.append(
                         np.nanmedian(np.linalg.norm(tips - wrist, axis=1)))
                     if window is not None:
-                        med = np.nanmedian(np.asarray(flexion_list), axis=0)
+                        med = _nanmedian_safe(np.asarray(flexion_list), axis=0)
                         self._show(
                             window, out,
                             title=f"「{name}」 {prompt}",
@@ -272,7 +272,7 @@ class GuidedCalibration:
                         f"gesture '{name}' collected no frames -- keep the hand "
                         "in the camera view")
                 stats[name] = {
-                    "flexion": np.nanmedian(np.asarray(flexion_list), axis=0),
+                    "flexion": _nanmedian_safe(np.asarray(flexion_list), axis=0),
                     "lateral": np.median(np.asarray(lateral_list), axis=0)
                     if lateral_list else np.zeros(4),
                     "reach": float(np.nanmedian(np.asarray(reach_list))),
