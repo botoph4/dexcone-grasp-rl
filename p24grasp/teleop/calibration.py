@@ -154,12 +154,13 @@ def compute_calibration(
               "(握拳时应 ~150-200 度),远端增益被限幅,建议重新标定", flush=True)
     distal_total_gain = (2.0 * ROBOT_DISTAL_ROM + DISTAL_ZERO_DEG) / total_measured
 
+    reach_m = float(np.nan_to_num(reach_m, nan=0.16))  # missing tips: default
     return HandCalibration(
         lateral=lateral,
         flexion_offsets_deg=offsets_flex,
         flexion_gains=flexion_gains,
         distal_total_gain=float(np.clip(distal_total_gain, 0.1, 3.0)),
-        reach_m=float(reach_m),
+        reach_m=reach_m,
     )
 
 
@@ -253,7 +254,7 @@ class GuidedCalibration:
                     tips = out.detection.keypoints3d[[4, 8, 12, 16, 20]]
                     wrist = out.detection.keypoints3d[0]
                     reach_list.append(
-                        np.median(np.linalg.norm(tips - wrist, axis=1)))
+                        np.nanmedian(np.linalg.norm(tips - wrist, axis=1)))
                     if window is not None:
                         med = np.nanmedian(np.asarray(flexion_list), axis=0)
                         self._show(
@@ -274,7 +275,7 @@ class GuidedCalibration:
                     "flexion": np.nanmedian(np.asarray(flexion_list), axis=0),
                     "lateral": np.median(np.asarray(lateral_list), axis=0)
                     if lateral_list else np.zeros(4),
-                    "reach": float(np.median(np.asarray(reach_list))),
+                    "reach": float(np.nanmedian(np.asarray(reach_list))),
                 }
                 flexion_med = stats[name]["flexion"]
                 print(f"[calibrate]   「{name}」采集完成 "

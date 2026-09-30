@@ -381,7 +381,11 @@ class HybridRetargeter(_TipSpaceRetargeter):
                 calibration_path=lateral_calibration_path)
             if self.scale is None:
                 # seed the adaptive reach with the calibrated open-hand size
-                self._human_reach = self._hand_calibration.reach_m
+                if np.isfinite(self._hand_calibration.reach_m):
+                    self._human_reach = self._hand_calibration.reach_m
+                else:
+                    print("[retarget] 警告: 标定文件中的伸展半径非有限值,"
+                          "使用默认值;建议重新运行 --calibrate", flush=True)
             print(f"[retarget] loaded hand calibration "
                   f"(lateral offsets "
                   f"{np.round(self._hand_calibration.lateral.offsets_deg, 1).tolist()}, "

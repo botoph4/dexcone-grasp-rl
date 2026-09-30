@@ -142,3 +142,15 @@ def test_ulnar_fingers_keep_negative_gains():
         lo_v = cal.gains[finger] * wrap_angle(
             np.array([together[finger]]) - np.array([cal.offsets_rad[finger]]))[0]
         np.testing.assert_allclose(lo_v, limits[finger, 0], atol=1e-6)
+
+
+def test_reach_nan_falls_back_to_default():
+    cal = compute_calibration(
+        open_flexion=np.zeros((5, 3)),
+        open_lateral=np.zeros(4),
+        together_lateral=np.zeros(4),
+        fist_flexion=np.full((5, 3), 90.0),
+        reach_m=np.nan,
+    )
+    assert cal.reach_m == 0.16
+    assert np.isfinite(cal.reach_m)
