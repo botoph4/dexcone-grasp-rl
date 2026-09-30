@@ -63,6 +63,22 @@ def colorize_depth(depth_m: np.ndarray) -> np.ndarray:
     return img
 
 
+def render_calibration_frame(color: np.ndarray, uv: np.ndarray,
+                             visibility: np.ndarray, presence: float,
+                             title: str, *, lines: list[str]) -> np.ndarray:
+    """Camera view + keypoints + a calibration info bar (used by the guided
+    gesture calibration window)."""
+    image = overlay_keypoints(color, uv, visibility, presence, State.TRACKING)
+    pil = Image.fromarray(image)
+    bar_height = 26 + 22 * len(lines)
+    info_bar = Image.new("RGB", (pil.width, bar_height), (20, 20, 20))
+    draw_bar = ImageDraw.Draw(info_bar)
+    draw_bar.text((10, 8), title, fill=(255, 220, 80))
+    for i, line in enumerate(lines):
+        draw_bar.text((10, 30 + 20 * i), line, fill=(255, 255, 255))
+    return np.asarray(np.vstack([pil, info_bar]))
+
+
 def _uv_from_keypoints(keypoints3d: np.ndarray, frame) -> np.ndarray:
     """Project lifted camera-frame keypoints back to pixel coordinates."""
     pts = np.full((21, 2), np.nan)

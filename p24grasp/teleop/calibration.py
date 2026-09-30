@@ -162,19 +162,35 @@ def compute_calibration(
 
 class GuidedCalibration:
     """Collect gesture statistics from the live camera and fit the
-    calibration; prints prompts and a countdown between gestures."""
+    calibration; prints prompts and a countdown between gestures, with an
+    optional live cv2 window (camera + keypoints + measurement readouts)."""
 
     def __init__(self, source, detector, seconds_per_gesture: float = 3.0,
-                 path: str | Path = DEFAULT_PATH):
+                 path: str | Path = DEFAULT_PATH, visualize: bool = True):
         self.source = source
         self.detector = detector
         self.seconds_per_gesture = seconds_per_gesture
         self.path = Path(path)
+        self.visualize = visualize
         self._lateral_probe = LateralEstimator(
             LateralCalibration((0.0, 0.0, 0.0, 0.0), (1.0, 1.0, 1.0, 1.0),
                                DEFAULT_LIMITS_DEG),
             filter_alpha=1.0,
         )
+
+    @staticmethod
+    def _show(cv2, out, title: str, lines: list[str]) -> None:
+        from p24grasp.teleop.viewer import (  # noqa: E402
+            _uv_from_keypoints,
+            render_calibration_frame,
+        )
+
+        uv = _uv_from_keypoints(out.detection.keypoints3d, out.frame)
+        frame = render_calibration_frame(
+            out.frame.color, uv, out.detection.visibility,
+            out.detection.presence, title, lines=lines)
+        cv2.imshow("p24 calibration", cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+        cv2.waitKey(1)
 
     def run(self) -> HandCalibration:
         from p24grasp.teleop.angles import angles_from_keypoints  # noqa: E402
@@ -182,12 +198,28 @@ class GuidedCalibration:
 
         pipeline = TeleopPipeline(self.source, self.detector)
         stats: dict[str, dict] = {}
+        window = None
+        if self.visualize:
+            try:
+                import cv2  # noqa: E402
+
+                cv2.namedWindow("p24 calibration", cv2.WINDOW_NORMAL)
+                window = cv2
+            except ImportError:
+                window = None
         try:
             for name, prompt in GESTURES:
                 print(f"\n[calibrate] 手势「{name}」:{prompt}", flush=True)
-                for count in range(3, 0, -1):
-                    print(f"[calibrate]   {count}...", flush=True)
-                    time.sleep(1.0)
+                # countdown with a live preview (also warms the pipeline)
+                countdown_end = time.monotonic() + 3.0
+                while time.monotonic() < countdown_end:
+                    out = pipeline.step()
+                    remaining = int(countdown_end - time.monotonic()) + 1
+                    print(f"\r[calibrate]   {remaining}...", end="", flush=True)
+                    if window is not None and out.frame is not None:
+                        self._show(window, out, title=f"准备:「{name}」",
+                                   lines=[prompt, f"倒数 {remaining} 秒"])
+                print("", flush=True)
                 flexion_list, lateral_list, reach_list = [], [], []
                 end = time.monotonic() + self.seconds_per_gesture
                 last_report = 0.0
@@ -196,6 +228,9 @@ class GuidedCalibration:
                     if out.frame is None:
                         continue
                     if out.detection.presence <= 0:
+                        if window is not None:
+                            self._show(window, out, title=f"「{name}」",
+                                       lines=["未检测到手,请把手放入画面"])
                         continue
                     angles = angles_from_keypoints(out.detection)
                     flexion_list.append(angles.flexion)
@@ -216,6 +251,18 @@ class GuidedCalibration:
                     wrist = out.detection.keypoints3d[0]
                     reach_list.append(
                         np.median(np.linalg.norm(tips - wrist, axis=1)))
+                    if window is not None:
+                        med = np.nanmedian(np.asarray(flexion_list), axis=0)
+                        self._show(
+                            window, out,
+                            title=f"「{name}」 {prompt}",
+                            lines=[
+                                f"剩余 {end - time.monotonic():.0f} 秒, "
+                                f"已采 {len(flexion_list)} 帧",
+                                f"MCP={np.round(med[1:, 0], 0).tolist()}",
+                                f"PIP+DIP总="
+                                f"{np.round(med[1:, 1] + med[1:, 2], 0).tolist()}",
+                            ])
                 if not flexion_list:
                     raise RuntimeError(
                         f"gesture '{name}' collected no frames -- keep the hand "
@@ -236,6 +283,8 @@ class GuidedCalibration:
                       flush=True)
         finally:
             pipeline.close()
+            if window is not None:
+                window.destroyAllWindows()
 
         calibration = compute_calibration(
             open_flexion=stats["open"]["flexion"],

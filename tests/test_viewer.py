@@ -110,3 +110,16 @@ def test_p24_mesh_renderer_never_raises():
         assert image is not None and image.ndim == 3
     else:
         assert image is None
+
+
+def test_render_calibration_frame_layout():
+    from p24grasp.teleop.viewer import render_calibration_frame  # noqa: E402
+
+    color = np.zeros((60, 80, 3), np.uint8)
+    uv = np.full((21, 2), np.nan)
+    frame = render_calibration_frame(
+        color, uv, np.ones(21), 1.0, "准备:「open」", lines=["倒数 3 秒"])
+    # camera view + an appended info bar
+    assert frame.shape[0] > 60
+    assert frame.shape[1] == 80
+    assert (frame[60:, :, :] == (20, 20, 20)).any()  # dark bar drawn
