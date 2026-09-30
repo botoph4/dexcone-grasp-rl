@@ -246,8 +246,17 @@ class GuidedCalibration:
                 print("", flush=True)
                 flexion_list, lateral_list, reach_list = [], [], []
                 end = time.monotonic() + self.seconds_per_gesture
+                grace = end + 10.0  # users often raise the hand after the beep
                 last_report = 0.0
-                while time.monotonic() < end:
+                while True:
+                    if time.monotonic() >= end and len(flexion_list) >= 10:
+                        break  # enough valid frames collected
+                    if time.monotonic() >= grace and not flexion_list:
+                        raise RuntimeError(
+                            f"gesture '{name}' collected no frames -- keep the "
+                            "hand in the camera view")
+                    if time.monotonic() >= grace:
+                        break  # some frames collected: accept and warn below
                     out = pipeline.step()
                     if out.frame is None:
                         continue
@@ -287,10 +296,9 @@ class GuidedCalibration:
                                 f"PIP+DIP总="
                                 f"{np.round(med[1:, 1] + med[1:, 2], 0).tolist()}",
                             ])
-                if not flexion_list:
-                    raise RuntimeError(
-                        f"gesture '{name}' collected no frames -- keep the hand "
-                        "in the camera view")
+                if len(flexion_list) < 10:
+                    print(f"[calibrate] 警告: 「{name}」有效帧较少"
+                          f"({len(flexion_list)}),中位数可能不稳", flush=True)
                 stats[name] = {
                     "flexion": _nanmedian_safe(np.asarray(flexion_list), axis=0),
                     "lateral": np.median(np.asarray(lateral_list), axis=0)
