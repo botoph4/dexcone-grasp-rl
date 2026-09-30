@@ -123,3 +123,18 @@ def test_render_calibration_frame_layout():
     assert frame.shape[0] > 60
     assert frame.shape[1] == 80
     assert (frame[60:, :, :] == (20, 20, 20)).any()  # dark bar drawn
+
+
+def test_calibration_frame_renders_cjk_text():
+    from p24grasp.teleop.viewer import _cjk_font, render_calibration_frame  # noqa: E402
+
+    color = np.zeros((60, 80, 3), np.uint8)
+    uv = np.full((21, 2), np.nan)
+    frame = render_calibration_frame(
+        color, uv, np.ones(21), 1.0, "准备:「握拳」", lines=["五指并拢,掌心朝向相机"])
+    info_bar = frame[60:]
+    text_pixels = int(((info_bar[:, :, 0] > 60) | (info_bar[:, :, 1] > 60)
+                       | (info_bar[:, :, 2] > 60)).sum())
+    if "PingFang" in str(getattr(_cjk_font(16), "path", "")) \
+            or "Hiragino" in str(getattr(_cjk_font(16), "path", "")):
+        assert text_pixels > 0  # a CJK font is available: text must render

@@ -63,6 +63,35 @@ def colorize_depth(depth_m: np.ndarray) -> np.ndarray:
     return img
 
 
+def _cjk_font(size: int = 16):
+    """A TTF font with CJK coverage (PIL's default bitmap font renders no
+    Chinese); falls back to the default font when none is installed."""
+    from functools import lru_cache
+
+    from PIL import ImageFont  # noqa: E402
+
+    @lru_cache(maxsize=None)
+    def resolve(font_size: int):
+        candidates = (
+            "/System/Library/Fonts/PingFang.ttc",          # macOS
+            "/System/Library/Fonts/Hiragino Sans GB.ttc",  # macOS
+            "/System/Library/Fonts/STHeiti Light.ttc",     # macOS
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",  # Linux
+            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",          # Linux
+            "C:/Windows/Fonts/msyh.ttc",                   # Windows
+            "C:/Windows/Fonts/simhei.ttf",                 # Windows
+        )
+        for path in candidates:
+            if Path(path).exists():
+                try:
+                    return ImageFont.truetype(path, font_size)
+                except OSError:
+                    continue
+        return ImageFont.load_default()
+
+    return resolve(size)
+
+
 def render_calibration_frame(color: np.ndarray, uv: np.ndarray,
                              visibility: np.ndarray, presence: float,
                              title: str, *, lines: list[str]) -> np.ndarray:
@@ -73,9 +102,10 @@ def render_calibration_frame(color: np.ndarray, uv: np.ndarray,
     bar_height = 26 + 22 * len(lines)
     info_bar = Image.new("RGB", (pil.width, bar_height), (20, 20, 20))
     draw_bar = ImageDraw.Draw(info_bar)
-    draw_bar.text((10, 8), title, fill=(255, 220, 80))
+    draw_bar.text((10, 8), title, fill=(255, 220, 80), font=_cjk_font(18))
     for i, line in enumerate(lines):
-        draw_bar.text((10, 30 + 20 * i), line, fill=(255, 255, 255))
+        draw_bar.text((10, 30 + 20 * i), line, fill=(255, 255, 255),
+                      font=_cjk_font(16))
     return np.asarray(np.vstack([pil, info_bar]))
 
 
