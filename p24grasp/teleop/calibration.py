@@ -45,8 +45,8 @@ DISTAL_ZERO_DEG = 10.0337  # robot zero-pose neutral distal bend
 
 GESTURES = (
     ("open", "五指伸直并张开(侧摆最大),掌心朝向相机"),
-    ("together", "五指并拢(侧摆最小)"),
-    ("fist", "握拳(屈曲最大)"),
+    ("together", "五指并拢(侧摆最小),掌心朝向相机"),
+    ("fist", "握拳(屈曲最大),保持掌心朝向相机、指根尽量折到 90 度"),
 )
 
 
@@ -190,6 +190,7 @@ class GuidedCalibration:
                     time.sleep(1.0)
                 flexion_list, lateral_list, reach_list = [], [], []
                 end = time.monotonic() + self.seconds_per_gesture
+                last_report = 0.0
                 while time.monotonic() < end:
                     out = pipeline.step()
                     if out.frame is None:
@@ -198,6 +199,15 @@ class GuidedCalibration:
                         continue
                     angles = angles_from_keypoints(out.detection)
                     flexion_list.append(angles.flexion)
+                    now = time.monotonic()
+                    if now - last_report >= 1.0:
+                        last_report = now
+                        med = np.nanmedian(np.asarray(flexion_list), axis=0)
+                        print(
+                            f"[calibrate]   进行中 MCP="
+                            f"{np.round(med[1:, 0], 0).tolist()} "
+                            f"PIP+DIP总={np.round(med[1:, 1] + med[1:, 2], 0).tolist()}",
+                            flush=True)
                     raw_lat, confidence, _ = self._lateral_probe.measure(
                         out.detection.keypoints3d)
                     if np.all(confidence > 0.6):
