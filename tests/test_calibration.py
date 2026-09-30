@@ -100,3 +100,23 @@ def test_estimator_uses_calibrated_lateral():
     limits = np.deg2rad(np.asarray(DEFAULT_LIMITS_DEG, dtype=np.float64))
     assert np.all(qpos >= limits[:, 0] - 1e-9)
     assert np.all(qpos <= limits[:, 1] + 1e-9)
+
+
+def test_calibrated_lateral_starts_at_the_together_mapping():
+    cal = compute_calibration(
+        open_flexion=np.zeros((5, 3)),
+        open_lateral=np.array([0.2, 0.2, 0.2, 0.2]),
+        together_lateral=np.array([-0.2, -0.2, -0.2, -0.2]),
+        fist_flexion=np.full((5, 3), 90.0),
+        reach_m=0.16,
+    )
+    estimator = LateralEstimator(
+        calibration=cal.lateral,
+        filter_alpha=1.0,
+        calibration_path="/nonexistent/cal.json",
+    )
+    # before any confident observation the output is the calibrated neutral
+    # (the two-point fit maps the together gesture to the lower limits)
+    qpos, _ = estimator.update(np.full((21, 3), np.nan))
+    lo = np.deg2rad(np.asarray(DEFAULT_LIMITS_DEG, dtype=np.float64))[:, 0]
+    np.testing.assert_allclose(qpos, lo, atol=1e-9)

@@ -485,19 +485,20 @@ class HybridRetargeter(_TipSpaceRetargeter):
     def retarget(self, angles: HandAngles,
                  keypoints3d: np.ndarray | None = None) -> np.ndarray:
         q0 = scaling_q16(self.hand, angles, self._hand_calibration)
+        # Shared calibrated lateral: always write the estimator's robot
+        # joint_2 values into the prior (it holds its calibrated initial
+        # value without observations), so the no-hand fallback also starts
+        # at the user's neutral spread instead of zero.
+        lateral_qpos, _ = self._lateral.update(keypoints3d)
+        for name in ("index", "little", "middle", "ring"):
+            start, _ = self.hand.chain_slices[name]
+            q0[start + 1] = lateral_qpos[LATERAL_FINGER_NAMES.index(name)]
         targets = self.targets_from_keypoints(keypoints3d)
         if targets is None:
             # depth loss: fall back to the joint mapping (graceful)
             self._q20_prev = self._to_urdf_degrees(q0)
             return self._q20_prev.copy()
         pip_targets = self.pip_targets_from_keypoints(keypoints3d)
-        # Shared calibrated lateral: write the estimator's robot joint_2
-        # values into the prior (the strongest prior weight then keeps the
-        # optimizer from misusing the lateral DOFs on flexion noise).
-        lateral_qpos, _ = self._lateral.update(keypoints3d)
-        for name in ("index", "little", "middle", "ring"):
-            start, _ = self.hand.chain_slices[name]
-            q0[start + 1] = lateral_qpos[LATERAL_FINGER_NAMES.index(name)]
         return self.solve(targets, q0, pip_targets)
 
 

@@ -130,17 +130,25 @@ def compute_calibration(
     measured_range = np.maximum(np.nan_to_num(fist_flexion, nan=0.0) - offsets_flex, 1.0)
     flexion_gains = np.ones((5, 3), dtype=np.float64)
     for row in range(1, 5):  # fingers: MCP 80 deg
-        flexion_gains[row, 0] = ROBOT_MCP_ROM / measured_range[row, 0]
+        if measured_range[row, 0] < 20.0:
+            print(f"[calibrate] 警告: 第 {row} 指 MCP 实测行程仅 "
+                  f"{measured_range[row, 0]:.0f} 度(握拳时应 ~60-90 度),"
+                  "增益被限幅,建议重新标定", flush=True)
+        flexion_gains[row, 0] = np.clip(
+            ROBOT_MCP_ROM / measured_range[row, 0], 0.3, 2.0)
         flexion_gains[row, 1] = 1.0  # PIP/DIP handled by the distal total gain
         flexion_gains[row, 2] = 1.0
     thumb_rom = np.asarray(ROBOT_THUMB_ROM, dtype=np.float64)
-    flexion_gains[0] = np.clip(thumb_rom / measured_range[0], 0.1, 3.0)
+    flexion_gains[0] = np.clip(thumb_rom / measured_range[0], 0.3, 2.0)
     # coupled distal: 0.5 * (g * total - 10.03) = 80 at the fist
     total_measured = np.maximum(
         np.median((fist_flexion[1:, 1] + fist_flexion[1:, 2])
                   - (offsets_flex[1:, 1] + offsets_flex[1:, 2])),
         1.0,
     )
+    if total_measured < 60.0:
+        print(f"[calibrate] 警告: 四指远端总行程仅 {total_measured:.0f} 度"
+              "(握拳时应 ~150-200 度),远端增益被限幅,建议重新标定", flush=True)
     distal_total_gain = (2.0 * ROBOT_DISTAL_ROM + DISTAL_ZERO_DEG) / total_measured
 
     return HandCalibration(
@@ -208,8 +216,14 @@ class GuidedCalibration:
                     if lateral_list else np.zeros(4),
                     "reach": float(np.median(np.asarray(reach_list))),
                 }
+                flexion_med = stats[name]["flexion"]
                 print(f"[calibrate]   「{name}」采集完成 "
                       f"({len(flexion_list)} 帧)", flush=True)
+                print(f"[calibrate]     四指 MCP 屈曲中位数: "
+                      f"{np.round(flexion_med[1:, 0], 1).tolist()}", flush=True)
+                print(f"[calibrate]     四指 PIP+DIP 总中位数: "
+                      f"{np.round(flexion_med[1:, 1] + flexion_med[1:, 2], 1).tolist()}",
+                      flush=True)
         finally:
             pipeline.close()
 

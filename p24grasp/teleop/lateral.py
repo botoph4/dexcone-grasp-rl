@@ -208,6 +208,12 @@ class LateralEstimator:
         # stays neutral instead of applying someone else's calibration --
         # wrong offsets collapse the middle fingers into each other.
         self._auto_calibrate = auto_calibrate
+        if not self._auto_calibrate:
+            # With an explicit (loaded) calibration the lateral joints start
+            # at the user's natural neutral spread -- the together-gesture
+            # mapping (the two-point fit sends the together pose to the
+            # lower limits) -- instead of zero.
+            self._value = self.calibration.limits_rad[:, 0].copy()
         self._collect_frames = collect_frames
         self._calibration_path = (
             Path(calibration_path) if calibration_path is not None
@@ -244,7 +250,10 @@ class LateralEstimator:
             raise ValueError(f"Expected keypoints shape (21, 3), got {positions.shape}.")
         normal = fit_palm_normal(positions, reference=self._last_normal)
         self._last_normal = normal.copy()
-        palm_center = np.nanmean(positions[list(PALM_FIT_INDICES)], axis=0)
+        palm_points = positions[list(PALM_FIT_INDICES)]
+        palm_points = palm_points[np.isfinite(palm_points).all(axis=1)]
+        palm_center = (palm_points.mean(axis=0) if len(palm_points)
+                       else np.zeros(3))
 
         angles = np.zeros(4, dtype=np.float64)
         confidence = np.zeros(4, dtype=np.float64)
