@@ -101,6 +101,38 @@ def _as_tuple4(values, name: str):
     return values
 
 
+def fit_palm_frame(positions: np.ndarray) -> np.ndarray:
+    """Geometry-defined palm frame from the two most stable rays.
+
+    Returns rows (x, y, z): x = in-plane wrist->middle-MCP (finger
+    direction), y = in-plane wrist->thumb-CMC orthogonalized (thumb side),
+    z = x cross y.  Unlike the fitted palm normal, this frame's handedness
+    is determined by the PHYSICAL rays, so the lateral measurement's sign
+    convention is identical between calibration and teleoperation sessions
+    (a fitted normal re-chooses its hemisphere per session depending on the
+    hand tilt, which flipped the index/middle lateral direction).
+    """
+    points = np.asarray(positions, dtype=np.float64)
+    wrist = points[0]
+    if not np.isfinite(wrist).all():
+        return np.eye(3)
+    normal = fit_palm_normal(points)
+    x_dir = points[9] - wrist  # middle MCP
+    x_dir -= np.dot(x_dir, normal) * normal
+    x_norm = np.linalg.norm(x_dir)
+    if not np.isfinite(x_dir).all() or x_norm < 1e-9:
+        return np.eye(3)
+    x_dir /= x_norm
+    y_dir = points[1] - wrist  # thumb CMC
+    y_dir -= np.dot(y_dir, normal) * normal
+    y_dir -= np.dot(y_dir, x_dir) * x_dir
+    y_norm = np.linalg.norm(y_dir)
+    if not np.isfinite(y_dir).all() or y_norm < 1e-9:
+        return np.eye(3)
+    y_dir /= y_norm
+    return np.stack([x_dir, y_dir, np.cross(x_dir, y_dir)])
+
+
 def wrap_angle(angle: np.ndarray) -> np.ndarray:
     """Wrap angles to ``[-pi, pi]`` elementwise."""
     angle = np.asarray(angle, dtype=np.float64)
@@ -257,6 +289,10 @@ class LateralEstimator:
             raise ValueError(f"Expected keypoints shape (21, 3), got {positions.shape}.")
         normal = fit_palm_normal(positions, reference=self._last_normal)
         self._last_normal = normal.copy()
+        # the derotation axis convention comes from the geometry-defined
+        # frame (stable across sessions), NOT the fitted normal whose
+        # hemisphere depends on the hand tilt at startup
+        geo_normal = fit_palm_frame(positions)[2]
         palm_points = positions[list(PALM_FIT_INDICES)]
         palm_points = palm_points[np.isfinite(palm_points).all(axis=1)]
         palm_center = (palm_points.mean(axis=0) if len(palm_points)
@@ -267,8 +303,8 @@ class LateralEstimator:
         for index, (mcp, pip, _) in enumerate(zip(MCP_INDICES, PIP_INDICES, DIP_INDICES)):
             reference_vector = positions[mcp] - palm_center
             current_vector = positions[pip] - positions[mcp]  # proximal phalanx
-            reference_in_plane = reference_vector - np.dot(reference_vector, normal) * normal
-            current_in_plane = current_vector - np.dot(current_vector, normal) * normal
+            reference_in_plane = reference_vector - np.dot(reference_vector, geo_normal) * geo_normal
+            current_in_plane = current_vector - np.dot(current_vector, geo_normal) * geo_normal
             current_norm = float(np.linalg.norm(current_vector))
             if current_norm < 1e-9 or not np.isfinite(current_vector).all():
                 confidence[index] = 0.0
@@ -277,9 +313,9 @@ class LateralEstimator:
                 np.clip(np.linalg.norm(current_in_plane) / current_norm, 0.0, 1.0)
             )
             if self.method == "derotation":
-                angles[index] = _derotation_angle(reference_in_plane, current_vector, normal)
+                angles[index] = _derotation_angle(reference_in_plane, current_vector, geo_normal)
             else:
-                angles[index] = _signed_angle(reference_in_plane, current_in_plane, normal)
+                angles[index] = _signed_angle(reference_in_plane, current_in_plane, geo_normal)
         return angles, confidence, normal
 
     def update(self, keypoints3d: np.ndarray) -> tuple[np.ndarray, dict]:

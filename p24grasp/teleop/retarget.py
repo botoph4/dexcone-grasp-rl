@@ -35,7 +35,7 @@ from p24grasp.teleop.angles import HandAngles, thumb_over_finger
 from p24grasp.teleop.lateral import (
     LATERAL_FINGER_NAMES,
     LateralEstimator,
-    fit_palm_normal,
+    fit_palm_frame,
 )
 
 # Joint order == URDF order.
@@ -210,29 +210,12 @@ class _TipSpaceRetargeter:
         wrist->thumb-MCP orthogonalized (thumb side).  The estimate is
         one-pole smoothed and re-orthonormalized (polar decomposition).
         """
-        wrist = keypoints3d[self.WRIST_ID]
-        normal_reference = None if self._palm_frame is None else self._palm_frame[2]
-        normal = fit_palm_normal(keypoints3d, reference=normal_reference)
-        x_dir = keypoints3d[9] - wrist  # middle MCP
-        x_dir -= np.dot(x_dir, normal) * normal
-        x_norm = np.linalg.norm(x_dir)
-        if not np.isfinite(x_dir).all() or x_norm < 1e-9:
+        frame = fit_palm_frame(keypoints3d)
+        if not np.isfinite(frame).all():
             # degenerate input (missing keypoints): keep the previous frame
             if self._palm_frame is None:
                 return np.eye(3)
             return self._palm_frame
-        x_dir /= x_norm
-        y_dir = keypoints3d[1] - wrist  # thumb CMC
-        y_dir -= np.dot(y_dir, normal) * normal
-        y_dir -= np.dot(y_dir, x_dir) * x_dir  # orthogonalize against x
-        y_norm = np.linalg.norm(y_dir)
-        if not np.isfinite(y_dir).all() or y_norm < 1e-9:
-            if self._palm_frame is None:
-                return np.eye(3)
-            return self._palm_frame
-        y_dir /= y_norm
-        z_dir = np.cross(x_dir, y_dir)
-        frame = np.stack([x_dir, y_dir, z_dir])
         if self._palm_frame is None:
             self._palm_frame = frame
         else:
