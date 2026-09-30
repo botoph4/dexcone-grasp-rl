@@ -104,6 +104,19 @@ def load_hand_calibration(path: str | Path | None = None) -> HandCalibration | N
         return None
 
 
+def _nanmedian_safe(values: np.ndarray, axis=None):
+    """Median over finite values without the all-NaN RuntimeWarning."""
+    values = np.asarray(values, dtype=np.float64)
+    if axis is None:
+        valid = values[np.isfinite(values)]
+        return float(np.median(valid)) if valid.size else float("nan")
+    medians = []
+    for row in np.moveaxis(values, axis, 0):
+        valid = row[np.isfinite(row)]
+        medians.append(float(np.median(valid)) if valid.size else float("nan"))
+    return np.asarray(medians)
+
+
 def compute_calibration(
     open_flexion: np.ndarray,  # (5, 3) median flexion at the open gesture
     open_lateral: np.ndarray,  # (4,) median raw lateral at the open gesture
