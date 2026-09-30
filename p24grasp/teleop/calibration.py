@@ -112,11 +112,14 @@ def _nanmedian_safe(values: np.ndarray, axis=None):
     if axis is None:
         valid = values[np.isfinite(values)]
         return float(np.median(valid)) if valid.size else float("nan")
-    medians = []
-    for row in np.moveaxis(values, axis, 0):
-        valid = row[np.isfinite(row)]
-        medians.append(float(np.median(valid)) if valid.size else float("nan"))
-    return np.asarray(medians)
+    moved = np.moveaxis(values, axis, -1)  # (..., N)
+    flat = moved.reshape(-1, moved.shape[-1])
+    medians = np.array([
+        float(np.median(row[np.isfinite(row)])) if np.isfinite(row).any()
+        else float("nan")
+        for row in flat
+    ])
+    return medians.reshape(moved.shape[:-1])
 
 
 def compute_calibration(

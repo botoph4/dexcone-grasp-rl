@@ -159,3 +159,14 @@ def test_reach_nan_falls_back_to_default():
     )
     assert cal.reach_m == 0.16
     assert np.isfinite(cal.reach_m)
+
+
+def test_nanmedian_safe_collapses_the_frame_axis():
+    from p24grasp.teleop.calibration import _nanmedian_safe  # noqa: E402
+
+    frames = np.full((4, 5, 3), 10.0)
+    frames[:, 1, 2] = np.nan  # one DOF hidden in every frame
+    med = _nanmedian_safe(frames, axis=0)
+    assert med.shape == (5, 3)
+    np.testing.assert_allclose(med[0], 10.0)
+    assert np.isnan(med[1, 2])
