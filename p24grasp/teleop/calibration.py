@@ -234,29 +234,41 @@ class GuidedCalibration:
         try:
             for name, prompt in GESTURES:
                 print(f"\n[calibrate] 手势「{name}」:{prompt}", flush=True)
-                # countdown with a live preview (also warms the pipeline)
+                # wait for the hand before starting the countdown (a gesture
+                # with no hand present just idles at the prompt)
                 countdown_end = time.monotonic() + 3.0
-                while time.monotonic() < countdown_end:
+                started = False
+                while True:
                     out = pipeline.step()
+                    if out.frame is None:
+                        continue
+                    hand_seen = out.detection.presence > 0
+                    if not started and not hand_seen:
+                        if window is not None:
+                            self._show(window, out, title=f"准备:「{name}」",
+                                       lines=[prompt, "请把手放入画面"])
+                        continue
+                    if not started:
+                        started = True
+                        countdown_end = time.monotonic() + 3.0
                     remaining = int(countdown_end - time.monotonic()) + 1
                     print(f"\r[calibrate]   {remaining}...", end="", flush=True)
-                    if window is not None and out.frame is not None:
+                    if window is not None:
                         self._show(window, out, title=f"准备:「{name}」",
                                    lines=[prompt, f"倒数 {remaining} 秒"])
+                    if time.monotonic() >= countdown_end:
+                        break
                 print("", flush=True)
                 flexion_list, lateral_list, reach_list = [], [], []
                 end = time.monotonic() + self.seconds_per_gesture
-                grace = end + 10.0  # users often raise the hand after the beep
+                grace = end + 10.0  # keep waiting when the hand leaves mid-way
                 last_report = 0.0
                 while True:
                     if time.monotonic() >= end and len(flexion_list) >= 10:
                         break  # enough valid frames collected
-                    if time.monotonic() >= grace and not flexion_list:
-                        raise RuntimeError(
-                            f"gesture '{name}' collected no frames -- keep the "
-                            "hand in the camera view")
-                    if time.monotonic() >= grace:
+                    if time.monotonic() >= grace and flexion_list:
                         break  # some frames collected: accept and warn below
+                    # zero frames: wait indefinitely for the hand to appear
                     out = pipeline.step()
                     if out.frame is None:
                         continue
