@@ -338,7 +338,8 @@ class HybridRetargeter(_TipSpaceRetargeter):
                  max_nfev: int = 200,
                  prior_weights: dict | None = None,
                  lateral_calibration_path: str | Path | None = None,
-                 hand_calibration_path: str | Path | None = None):
+                 hand_calibration_path: str | Path | None = None,
+                 lateral_enabled: bool = True):
         # max_nfev=200 covers the cold start (first frame from the zero
         # pose); warm-started frames converge in a single iteration.
         # prior_weights: per-joint-class regularization strength (reference
@@ -354,6 +355,8 @@ class HybridRetargeter(_TipSpaceRetargeter):
         self.pinch_weight = pinch_weight
         self.reg_weight = reg_weight
         self.pip_weight = pip_weight
+        self.lateral_enabled = lateral_enabled
+        self._lateral_j2 = np.array([5, 9, 13, 17])  # URDF joint_2 slots
         self._weights = np.array(
             [2.0, 1.0, 1.0, 1.0, 2.0])  # index..thumb chain order (pinch side)
         prior_config = {
@@ -485,21 +488,31 @@ class HybridRetargeter(_TipSpaceRetargeter):
     def retarget(self, angles: HandAngles,
                  keypoints3d: np.ndarray | None = None) -> np.ndarray:
         q0 = scaling_q16(self.hand, angles, self._hand_calibration)
-        # Shared calibrated lateral: always write the estimator's robot
-        # joint_2 values into the prior (it holds its calibrated initial
-        # value without observations), so the no-hand fallback also starts
-        # at the user's neutral spread instead of zero.
-        lateral_qpos, _ = self._lateral.update(keypoints3d)
-        for name in ("index", "little", "middle", "ring"):
-            start, _ = self.hand.chain_slices[name]
-            q0[start + 1] = lateral_qpos[LATERAL_FINGER_NAMES.index(name)]
+        if self.lateral_enabled:
+            # Shared calibrated lateral: always write the estimator's robot
+            # joint_2 values into the prior (it holds its calibrated initial
+            # value without observations), so the no-hand fallback also starts
+            # at the user's neutral spread instead of zero.
+            lateral_qpos, _ = self._lateral.update(keypoints3d)
+            for name in ("index", "little", "middle", "ring"):
+                start, _ = self.hand.chain_slices[name]
+                q0[start + 1] = lateral_qpos[LATERAL_FINGER_NAMES.index(name)]
+        else:
+            # lateral disabled: hold the four joint_2 DOFs at neutral
+            for name in ("index", "little", "middle", "ring"):
+                start, _ = self.hand.chain_slices[name]
+                q0[start + 1] = 0.0
         targets = self.targets_from_keypoints(keypoints3d)
         if targets is None:
             # depth loss: fall back to the joint mapping (graceful)
             self._q20_prev = self._to_urdf_degrees(q0)
             return self._q20_prev.copy()
         pip_targets = self.pip_targets_from_keypoints(keypoints3d)
-        return self.solve(targets, q0, pip_targets)
+        q20 = self.solve(targets, q0, pip_targets)
+        if not self.lateral_enabled:
+            q20[self._lateral_j2] = 0.0
+            self._q20_prev = q20.copy()
+        return q20
 
 
 @dataclass

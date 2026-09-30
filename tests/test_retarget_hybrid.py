@@ -158,3 +158,17 @@ def test_warm_start_recovers_after_pose_change():
     q_sol = ret._q20_to_active(q20)  # pylint: disable=protected-access
     tips_sol = ret._tips(np.asarray(q_sol))  # pylint: disable=protected-access
     np.testing.assert_allclose(tips_sol, targets_open, atol=5e-3)
+
+
+def test_lateral_disabled_holds_j2_at_neutral():
+    import tempfile
+
+    tmp = Path(tempfile.mkdtemp())
+    ret = HybridRetargeter(max_nfev=400,
+                           lateral_calibration_path=tmp / "lateral.json",
+                           hand_calibration_path=tmp / "hand.json",
+                           lateral_enabled=False)
+    for _ in range(3):
+        q20 = ret.retarget(_angles(flexion=40.0),
+                           keypoints3d=_straight_keypoints())
+    np.testing.assert_allclose(q20[[5, 9, 13, 17]], 0.0, atol=1e-9)

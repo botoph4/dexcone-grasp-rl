@@ -36,12 +36,13 @@ def _auto_detect_source(width: int, height: int, fps: int,
     raise RuntimeError("no RGB-D camera detected: " + " | ".join(errors))
 
 
-def make_retargeter(kind: str, hand_calibration_path=None):
+def make_retargeter(kind: str, hand_calibration_path=None, lateral_enabled=True):
     """Factory for the retargeting backends."""
     if kind == "hybrid":
         from p24grasp.teleop.retarget import HybridRetargeter  # noqa: E402
 
-        return HybridRetargeter(hand_calibration_path=hand_calibration_path)
+        return HybridRetargeter(hand_calibration_path=hand_calibration_path,
+                                lateral_enabled=lateral_enabled)
     if kind == "fingertip":
         from p24grasp.teleop.retarget import FingertipRetargeter  # noqa: E402
 
@@ -93,7 +94,8 @@ CSV_HEADER = ["ts", "state", "thumb_cmc", "thumb_mp", "index_mcp", "index_pip",
 
 def _run(source, args: argparse.Namespace, csv_row) -> int:
     detector = HandDetector(model_path=args.model)
-    retargeter = make_retargeter(args.retarget, args.calibration)
+    retargeter = make_retargeter(args.retarget, args.calibration,
+                                 lateral_enabled=not args.no_lateral)
     pipeline = TeleopPipeline(source, detector, retargeter=retargeter)
     frames = 0
     try:
@@ -145,6 +147,9 @@ def camera_main(argv: list[str] | None = None) -> int:
                         help="show the live pipeline in a local cv2 window "
                              "(works under sudo; the web page is unreliable "
                              "on some macOS/browser combinations)")
+    parser.add_argument("--no-lateral", action="store_true",
+                        help="disable the lateral (ab/adduction) mapping: the "
+                             "four joint_2 DOFs stay at neutral zero")
     parser.add_argument("--calibration", default=None,
                         help="hand calibration file (default: "
                              "~/.cache/p24grasp/hand_calibration.json); "
@@ -212,7 +217,8 @@ def camera_main(argv: list[str] | None = None) -> int:
             run_mujoco_viewer,
         )
 
-        retargeter = make_retargeter(args.retarget, args.calibration)
+        retargeter = make_retargeter(args.retarget, args.calibration,
+                                     lateral_enabled=not args.no_lateral)
         detector = HandDetector(model_path=args.model)
         try:
             if args.mujoco_view and not args.local:
