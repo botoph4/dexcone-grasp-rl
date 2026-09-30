@@ -16,6 +16,26 @@ from p24grasp.teleop.detector import HandDetector
 from p24grasp.teleop.pipeline import TeleopPipeline, format_angles
 
 
+def _auto_detect_source(width: int, height: int, fps: int,
+                        frame_sync: bool, align: str):
+    """Try the RealSense backend first, then fall back to Orbbec."""
+    errors = []
+    for kind in ("realsense", "orbbec"):
+        source = make_camera_source(kind, width, height, fps,
+                                    frame_sync=frame_sync, align=align)
+        try:
+            source.start()
+            print(f"[{kind}] device detected", flush=True)
+            return source
+        except RuntimeError as exc:
+            errors.append(f"{kind}: {exc}")
+            try:
+                source.close()
+            except Exception:  # pylint: disable=broad-exception-caught
+                pass
+    raise RuntimeError("no RGB-D camera detected: " + " | ".join(errors))
+
+
 def make_retargeter(kind: str, hand_calibration_path=None):
     """Factory for the retargeting backends."""
     if kind == "hybrid":
@@ -112,8 +132,9 @@ def replay_main(argv: list[str] | None = None) -> int:
 def camera_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Live teleop from a RealSense D405 "
                                                  "or Orbbec Gemini 305")
-    parser.add_argument("--camera", choices=("realsense", "orbbec"),
-                        default="realsense", help="RGB-D backend (default: realsense)")
+    parser.add_argument("--camera", choices=("auto", "realsense", "orbbec"),
+                        default="auto",
+                        help="RGB-D backend (default: auto-detect)")
     parser.add_argument("--probe", action="store_true",
                         help="run step-by-step camera bring-up diagnostics and exit "
                              "(orbbec only)")
@@ -153,9 +174,16 @@ def camera_main(argv: list[str] | None = None) -> int:
     parser.add_argument("--fps", type=int, default=60)
     _add_common(parser)
     args = parser.parse_args(argv)
-    width = args.width if args.width else (848 if args.camera == "orbbec" else 640)
-    source = make_camera_source(args.camera, width, args.height, args.fps,
-                                frame_sync=args.frame_sync, align=args.align)
+    if args.camera == "auto":
+        source = _auto_detect_source(args.width or 848, args.height, args.fps,
+                                     args.frame_sync, args.align)
+        args.camera = "orbbec" if isinstance(source, OrbbecSource) else "realsense"
+        width = source.width
+    else:
+        width = args.width if args.width else (848 if args.camera == "orbbec" else 640)
+        source = make_camera_source(args.camera, width, args.height, args.fps,
+                                    frame_sync=args.frame_sync, align=args.align)
+        source.start()
     if args.calibrate:
         from p24grasp.teleop.calibration import (  # noqa: E402
             DEFAULT_PATH,
@@ -163,7 +191,6 @@ def camera_main(argv: list[str] | None = None) -> int:
         )
 
         detector = HandDetector(model_path=args.model)
-        source.start()
         try:
             GuidedCalibration(source, detector,
                               path=args.calibration or DEFAULT_PATH).run()
@@ -176,7 +203,6 @@ def camera_main(argv: list[str] | None = None) -> int:
             return 2
         source.probe()
         return 0
-    source.start()
     print(f"[{args.camera}] camera started ({width}x{args.height}@{args.fps}), "
           "waiting for frames...", flush=True)
     if args.view or args.local:
@@ -231,8 +257,9 @@ def record_main(argv: list[str] | None = None) -> int:
         description="Record RGB-D frames for offline replay (dev machines without camera)")
     parser.add_argument("--out", required=True)
     parser.add_argument("--frames", type=int, default=600)
-    parser.add_argument("--camera", choices=("realsense", "orbbec"),
-                        default="realsense", help="RGB-D backend (default: realsense)")
+    parser.add_argument("--camera", choices=("auto", "realsense", "orbbec"),
+                        default="auto",
+                        help="RGB-D backend (default: auto-detect)")
     parser.add_argument("--width", type=int, default=None,
                         help="color width (default: 640 for realsense, 848 for orbbec)")
     parser.add_argument("--height", type=int, default=480)
@@ -240,10 +267,14 @@ def record_main(argv: list[str] | None = None) -> int:
     parser.add_argument("--frame-sync", action="store_true",
                         help="enable Orbbec frame sync (off by default)")
     args = parser.parse_args(argv)
-    width = args.width if args.width else (848 if args.camera == "orbbec" else 640)
-    source = make_camera_source(args.camera, width, args.height, args.fps,
-                                frame_sync=args.frame_sync)
-    source.start()
+    if args.camera == "auto":
+        source = _auto_detect_source(args.width or 848, args.height, args.fps,
+                                     args.frame_sync, "hw")
+    else:
+        width = args.width if args.width else (848 if args.camera == "orbbec" else 640)
+        source = make_camera_source(args.camera, width, args.height, args.fps,
+                                    frame_sync=args.frame_sync)
+        source.start()
     try:
         saved = record_frames(source, args.out, args.frames)
         print(f"recorded {saved} frames to {Path(args.out).resolve()}")
