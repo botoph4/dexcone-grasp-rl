@@ -16,12 +16,12 @@ from p24grasp.teleop.detector import HandDetector
 from p24grasp.teleop.pipeline import TeleopPipeline, format_angles
 
 
-def make_retargeter(kind: str):
+def make_retargeter(kind: str, hand_calibration_path=None):
     """Factory for the retargeting backends."""
     if kind == "hybrid":
         from p24grasp.teleop.retarget import HybridRetargeter  # noqa: E402
 
-        return HybridRetargeter()
+        return HybridRetargeter(hand_calibration_path=hand_calibration_path)
     if kind == "fingertip":
         from p24grasp.teleop.retarget import FingertipRetargeter  # noqa: E402
 
@@ -73,7 +73,7 @@ CSV_HEADER = ["ts", "state", "thumb_cmc", "thumb_mp", "index_mcp", "index_pip",
 
 def _run(source, args: argparse.Namespace, csv_row) -> int:
     detector = HandDetector(model_path=args.model)
-    retargeter = make_retargeter(args.retarget)
+    retargeter = make_retargeter(args.retarget, args.calibration)
     pipeline = TeleopPipeline(source, detector, retargeter=retargeter)
     frames = 0
     try:
@@ -124,6 +124,10 @@ def camera_main(argv: list[str] | None = None) -> int:
                         help="show the live pipeline in a local cv2 window "
                              "(works under sudo; the web page is unreliable "
                              "on some macOS/browser combinations)")
+    parser.add_argument("--calibration", default=None,
+                        help="hand calibration file (default: "
+                             "~/.cache/p24grasp/hand_calibration.json); "
+                             "written by --calibrate, read by every teleop run")
     parser.add_argument("--calibrate", action="store_true",
                         help="guided gesture calibration: open / together / "
                              "fist poses calibrate the lateral bounds and the "
@@ -153,12 +157,16 @@ def camera_main(argv: list[str] | None = None) -> int:
     source = make_camera_source(args.camera, width, args.height, args.fps,
                                 frame_sync=args.frame_sync, align=args.align)
     if args.calibrate:
-        from p24grasp.teleop.calibration import GuidedCalibration  # noqa: E402
+        from p24grasp.teleop.calibration import (  # noqa: E402
+            DEFAULT_PATH,
+            GuidedCalibration,
+        )
 
         detector = HandDetector(model_path=args.model)
         source.start()
         try:
-            GuidedCalibration(source, detector).run()
+            GuidedCalibration(source, detector,
+                              path=args.calibration or DEFAULT_PATH).run()
         finally:
             source.close()
         return 0
@@ -178,7 +186,7 @@ def camera_main(argv: list[str] | None = None) -> int:
             run_mujoco_viewer,
         )
 
-        retargeter = make_retargeter(args.retarget)
+        retargeter = make_retargeter(args.retarget, args.calibration)
         detector = HandDetector(model_path=args.model)
         try:
             if args.mujoco_view and not args.local:

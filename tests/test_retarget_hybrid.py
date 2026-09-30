@@ -17,8 +17,12 @@ from p24grasp.teleop.retarget import (  # noqa: E402
 def _retargeter() -> HybridRetargeter:
     import tempfile
 
-    path = Path(tempfile.mkdtemp()) / "lateral.json"
-    return HybridRetargeter(max_nfev=400, lateral_calibration_path=path)
+    tmp = Path(tempfile.mkdtemp())
+    return HybridRetargeter(
+        max_nfev=400,
+        lateral_calibration_path=tmp / "lateral.json",
+        hand_calibration_path=tmp / "hand_calibration.json",
+    )
 
 
 def _angles(flexion: float = 30.0, abduction: float = 0.0) -> HandAngles:

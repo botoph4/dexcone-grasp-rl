@@ -341,7 +341,8 @@ class HybridRetargeter(_TipSpaceRetargeter):
                  pip_weight: float = 0.5,
                  max_nfev: int = 200,
                  prior_weights: dict | None = None,
-                 lateral_calibration_path: str | Path | None = None):
+                 lateral_calibration_path: str | Path | None = None,
+                 hand_calibration_path: str | Path | None = None):
         # max_nfev=200 covers the cold start (first frame from the zero
         # pose); warm-started frames converge in a single iteration.
         # prior_weights: per-joint-class regularization strength (reference
@@ -367,13 +368,25 @@ class HybridRetargeter(_TipSpaceRetargeter):
         # otherwise the startup auto-calibration learns the user's neutral
         # lateral spread from ~1 s of open-hand frames (and stays neutral
         # until then -- wrong offsets collapse the middle fingers together).
-        from p24grasp.teleop.calibration import load_hand_calibration  # noqa: E402
+        from p24grasp.teleop.calibration import (  # noqa: E402
+            load_hand_calibration,
+        )
 
-        self._hand_calibration = load_hand_calibration()
+        self._hand_calibration = load_hand_calibration(
+            hand_calibration_path if hand_calibration_path is not None
+            else None)
         if self._hand_calibration is not None:
             self._lateral = LateralEstimator(
                 calibration=self._hand_calibration.lateral,
                 calibration_path=lateral_calibration_path)
+            if self.scale is None:
+                # seed the adaptive reach with the calibrated open-hand size
+                self._human_reach = self._hand_calibration.reach_m
+            print(f"[retarget] loaded hand calibration "
+                  f"(lateral offsets "
+                  f"{np.round(self._hand_calibration.lateral.offsets_deg, 1).tolist()}, "
+                  f"reach {self._hand_calibration.reach_m * 1000:.0f} mm)",
+                  flush=True)
         else:
             self._lateral = LateralEstimator(
                 auto_calibrate=True, calibration_path=lateral_calibration_path)

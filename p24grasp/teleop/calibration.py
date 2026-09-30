@@ -95,10 +95,11 @@ def save_hand_calibration(calibration: HandCalibration,
     print(f"[calibrate] hand calibration saved to {path}")
 
 
-def load_hand_calibration(path: str | Path = DEFAULT_PATH) -> HandCalibration | None:
+def load_hand_calibration(path: str | Path | None = None) -> HandCalibration | None:
+    path = DEFAULT_PATH if path is None else Path(path)
     try:
         return HandCalibration.from_dict(
-            json.loads(Path(path).read_text(encoding="utf-8")))
+            json.loads(path.read_text(encoding="utf-8")))
     except (OSError, ValueError, KeyError):
         return None
 
