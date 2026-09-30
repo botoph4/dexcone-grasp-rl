@@ -111,3 +111,16 @@ def test_visibility_is_min_of_contributing_keypoints():
     assert angles.flexion_vis[1, 2] == 0.2  # DIP + PIP use kp7
     assert angles.flexion_vis[1, 1] == 0.2
     assert angles.flexion_vis[1, 0] == 1.0  # MCP uses wrist/MCP/PIP only
+
+
+def test_thumb_over_index_damps_index_visibility():
+    kp = _straight_hand()
+    kp[4] = kp[5] + (0.01, 0.0, 0.0)  # thumb tip right on the index MCP
+    angles = angles_from_keypoints(_det(kp))
+    assert angles.flexion_vis[1, 0] <= 0.3
+    assert angles.flexion_vis[1, 2] <= 0.3
+
+
+def test_thumb_away_leaves_visibility_intact():
+    angles = angles_from_keypoints(_det(_straight_hand()))
+    assert angles.flexion_vis[1, 0] == 1.0

@@ -172,6 +172,8 @@ def angles_from_keypoints(det: HandDetection) -> HandAngles:
         # middle finger is its own reference: report 0 by definition
         abduction[2] = 0.0
 
+    # Per-DOF visibility = min visibility of the keypoints that built the angle.
+    vis = det.visibility
     # Thumb-over-finger occlusion: when the thumb tip covers a finger's
     # proximal joints, MediaPipe's keypoints (and the depth under them)
     # belong to the thumb, so an unbent finger measures spurious flexion.
@@ -181,9 +183,6 @@ def angles_from_keypoints(det: HandDetection) -> HandAngles:
         if thumb_over_finger(kp, occluded_base):
             vis[occluded_base:occluded_base + 4] = np.minimum(
                 vis[occluded_base:occluded_base + 4], 0.3)
-
-    # Per-DOF visibility = min visibility of the keypoints that built the angle.
-    vis = det.visibility
     flexion_vis = np.zeros((5, 3))
     abduction_vis = np.zeros(5)
     for row, (base, mid, dip, tip) in enumerate(FINGER_IDS):
