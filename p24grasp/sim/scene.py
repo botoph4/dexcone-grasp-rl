@@ -7,6 +7,7 @@ contact on, palm-finger off), the placement fitting and the placement probe.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -151,12 +152,27 @@ def build_interactive_scene(
 
     extras = f"""
   <option gravity="0 0 {-gravity:.6g}" cone="elliptic" timestep="{timestep}"/>
+  <asset>
+    <!-- bright gradient sky: the first skybox texture becomes the default -->
+    <texture type="skybox" builtin="gradient" rgb1="0.86 0.90 0.96"
+             rgb2="0.62 0.68 0.82" width="512" height="512"/>
+  </asset>
   <visual>
     <global offwidth="1280" offheight="960"/>
-    <headlight diffuse="0.7 0.7 0.7" specular="0.3 0.3 0.3"/>
-    <rgba haze="0.15 0.25 0.35 1"/>
+    <headlight diffuse="0.8 0.8 0.8" specular="0.25 0.25 0.25"/>
+    <rgba haze="0.5 0.6 0.7 1"/>
   </visual>
 """
+    lights = """
+  <!-- key/fill lights so the hand reads clearly against the bright sky -->
+  <light directional="true" diffuse="0.7 0.7 0.7" specular="0.1 0.1 0.1"
+         pos="0 0 0.5" dir="0 0 -1"/>
+  <light directional="true" diffuse="0.35 0.35 0.35"
+         pos="-0.3 0 0.3" dir="1 0 -0.5"/>
+  <light directional="true" diffuse="0.25 0.25 0.25"
+         pos="0.3 0 0.3" dir="-1 0 -0.5"/>
+"""
+    scene = scene.replace("</worldbody>", lights + "</worldbody>", 1)
     return scene.replace("</mujoco>", extras + "</mujoco>", 1)
 
 
