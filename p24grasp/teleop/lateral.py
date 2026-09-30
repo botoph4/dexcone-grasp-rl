@@ -42,11 +42,14 @@ PALM_FIT_INDICES = (0, 5, 9, 13, 17)  # wrist + four MCPs
 # neighbour, so inward adduction is clamped while outward abduction keeps
 # the full range.
 DEFAULT_LIMITS_DEG = ((-15.0, 5.0), (-15.0, 15.0), (-15.0, 15.0), (-15.0, 0.0))
-# Robot joint_2 direction that adducts each finger toward its neighbour
-# (index -> middle, middle/ring -> index side, little -> ring).  The guided
-# calibration maps the user's together gesture onto these values.
-INWARD_LIMITS_DEG = (5.0, 15.0, 15.0, 0.0)
-OUTWARD_LIMITS_DEG = (-15.0, -15.0, -15.0, -15.0)
+# Robot joint_2 direction that adducts each finger toward its neighbour,
+# MEASURED from the URDF FK (+j2 moves every fingertip toward the thumb
+# side): index closes toward the middle with NEGATIVE j2 (-15); middle and
+# ring close toward the index side with positive j2 (+15); the little
+# finger's inward range is capped at 0.  The guided calibration maps the
+# user's together gesture onto these values.
+INWARD_LIMITS_DEG = (-15.0, 15.0, 15.0, 0.0)
+OUTWARD_LIMITS_DEG = (5.0, -15.0, -15.0, -15.0)
 
 # Defaults from the reference workspace configs (lateral_common.yml).
 DEFAULT_CALIBRATION_PATH = Path.home() / ".cache" / "p24grasp" / "lateral_calibration.json"

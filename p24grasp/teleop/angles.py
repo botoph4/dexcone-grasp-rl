@@ -131,6 +131,16 @@ def signed_flexion_from_palm_plane(
     return float(np.degrees(np.arctan2(-normal_component, in_plane_norm)))
 
 
+def thumb_over_finger(keypoints3d: np.ndarray, base_index: int,
+                       distance_m: float = 0.025) -> bool:
+    """True when the thumb tip covers the finger base's neighbourhood."""
+    kp = np.asarray(keypoints3d, dtype=np.float64)
+    thumb_tip = kp[4]
+    if not np.isfinite(thumb_tip).all() or not np.isfinite(kp[base_index]).all():
+        return False
+    return bool(np.linalg.norm(thumb_tip - kp[base_index]) < distance_m)
+
+
 def angles_from_keypoints(det: HandDetection) -> HandAngles:
     """Compute flexion + abduction angles from a 21-keypoint detection.
 
@@ -161,6 +171,16 @@ def angles_from_keypoints(det: HandDetection) -> HandAngles:
             abduction[row] = _signed_angle_deg(dir_vec, ref, normal)
         # middle finger is its own reference: report 0 by definition
         abduction[2] = 0.0
+
+    # Thumb-over-finger occlusion: when the thumb tip covers a finger's
+    # proximal joints, MediaPipe's keypoints (and the depth under them)
+    # belong to the thumb, so an unbent finger measures spurious flexion.
+    # Lower the affected finger's visibility below the state machine's
+    # threshold so those DOFs are held instead of followed.
+    for occluded_base in (5, 9):  # index, middle MCP
+        if thumb_over_finger(kp, occluded_base):
+            vis[occluded_base:occluded_base + 4] = np.minimum(
+                vis[occluded_base:occluded_base + 4], 0.3)
 
     # Per-DOF visibility = min visibility of the keypoints that built the angle.
     vis = det.visibility

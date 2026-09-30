@@ -31,7 +31,7 @@ from typing import Protocol
 
 import numpy as np
 
-from p24grasp.teleop.angles import HandAngles
+from p24grasp.teleop.angles import HandAngles, thumb_over_finger
 from p24grasp.teleop.lateral import (
     LATERAL_FINGER_NAMES,
     LateralEstimator,
@@ -143,6 +143,10 @@ class _TipSpaceRetargeter:
         # that never fully extends still converges).
         self._human_reach = 0.12 if scale is None else self._robot_reach / scale
         self._palm_frame: np.ndarray | None = None  # smoothed camera->palm rotation
+        # per-finger target memory: the index holds its last targets while
+        # the thumb covers it (the keypoints then belong to the thumb)
+        self._last_targets: np.ndarray | None = None
+        self._last_pip_targets: np.ndarray | None = None
 
     def _chain(self, name):
         for chain in self.hand.chains:
@@ -162,6 +166,10 @@ class _TipSpaceRetargeter:
                         for name in self._chain_names])
         scale = self._update_scale(rel)
         targets = scale * (frame @ rel.T).T + self.mount_t
+        if thumb_over_finger(keypoints3d, 5) and self._last_targets is not None:
+            index_slot = self._chain_names.index("index")
+            targets[index_slot] = self._last_targets[index_slot]
+        self._last_targets = targets
         return targets
 
     def pip_targets_from_keypoints(self, keypoints3d: np.ndarray) -> np.ndarray | None:
@@ -177,7 +185,12 @@ class _TipSpaceRetargeter:
         scale = self._update_scale(
             np.stack([keypoints3d[self.TIP_IDS[name]] - wrist
                       for name in self._chain_names]))
-        return scale * (frame @ rel.T).T + self.mount_t
+        pip_targets = scale * (frame @ rel.T).T + self.mount_t
+        if thumb_over_finger(keypoints3d, 5) and self._last_pip_targets is not None:
+            index_slot = self._chain_names.index("index")
+            pip_targets[index_slot] = self._last_pip_targets[index_slot]
+        self._last_pip_targets = pip_targets
+        return pip_targets
 
     def _update_scale(self, rel: np.ndarray) -> float:
         if self.scale is None:
