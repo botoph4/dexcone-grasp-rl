@@ -109,8 +109,13 @@ python scripts/teleop_replay.py --dir /tmp/rec
 自标定坐标系 + 自适应尺度）、`fingertip`（纯指尖优化）、`scaling`（纯关节
 映射）、`geort`（仿真训练的神经映射）、`dex`（dex-retargeting 向量优化）。
 
-> macOS 上 Orbbec 需 sudo（系统 UVC 权限限制）；启动后开掌保持约 1 秒完成
-> 侧摆自动标定（结果持久化到 `~/.cache/p24grasp/lateral_calibration.json`）。
+> macOS 上 Orbbec 需 sudo（系统 UVC 权限限制）。首次使用建议跑一次引导式
+> 手势标定（并拢/张开/握拳 → 侧摆上下限 + 屈曲行程，结果持久化），
+> 之后启动无需再标定：
+
+```bash
+sudo python scripts/teleop_camera.py --camera orbbec --calibrate
+```
 
 ### 测试
 

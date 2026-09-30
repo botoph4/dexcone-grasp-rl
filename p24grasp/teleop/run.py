@@ -124,6 +124,10 @@ def camera_main(argv: list[str] | None = None) -> int:
                         help="show the live pipeline in a local cv2 window "
                              "(works under sudo; the web page is unreliable "
                              "on some macOS/browser combinations)")
+    parser.add_argument("--calibrate", action="store_true",
+                        help="guided gesture calibration: open / together / "
+                             "fist poses calibrate the lateral bounds and the "
+                             "flexion range, saved for later runs")
     parser.add_argument("--mujoco-view", action="store_true",
                         help="open a separate interactive MuJoCo viewer window "
                              "for the mapped P24 hand (rotate/zoom, standard "
@@ -148,6 +152,16 @@ def camera_main(argv: list[str] | None = None) -> int:
     width = args.width if args.width else (848 if args.camera == "orbbec" else 640)
     source = make_camera_source(args.camera, width, args.height, args.fps,
                                 frame_sync=args.frame_sync, align=args.align)
+    if args.calibrate:
+        from p24grasp.teleop.calibration import GuidedCalibration  # noqa: E402
+
+        detector = HandDetector(model_path=args.model)
+        source.start()
+        try:
+            GuidedCalibration(source, detector).run()
+        finally:
+            source.close()
+        return 0
     if args.probe:
         if not isinstance(source, OrbbecSource):
             print(f"--probe is only supported for the orbbec backend, not {args.camera}")

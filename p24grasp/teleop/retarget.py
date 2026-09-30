@@ -75,9 +75,18 @@ class Retargeter(Protocol):
         ...
 
 
-def scaling_q16(hand, angles: HandAngles) -> np.ndarray:
+def scaling_q16(hand, angles: HandAngles,
+                 calibration: "HandCalibration | None" = None) -> np.ndarray:
     """DirectAngleScaling output as the 16 active DOFs (rad, active order)."""
-    q20 = np.radians(DirectAngleScaling().retarget(angles))
+    if calibration is not None:
+        scaling = DirectAngleScaling(
+            flexion_offsets_deg=calibration.flexion_offsets_deg,
+            flexion_gains=calibration.flexion_gains,
+            distal_total_gain=calibration.distal_total_gain,
+        )
+    else:
+        scaling = DirectAngleScaling()
+    q20 = np.radians(scaling.retarget(angles))
     out = np.zeros(hand.n_active)
     thumb_s, thumb_e = hand.chain_slices["thumb"]
     out[thumb_s:thumb_e] = q20[0:4]
@@ -354,12 +363,20 @@ class HybridRetargeter(_TipSpaceRetargeter):
             "mcp_flexion": 0.01, "lateral": 0.05, "distal": 0.01,
             **(prior_weights or {})}
         self._prior_weights = self._make_prior_weights(prior_config)
-        # auto_calibrate: the reference workspace's lateral offsets are
-        # per-user; wrong ones collapse the middle fingers together.  With
-        # auto-calibration the estimator learns this user's neutral spread
-        # from ~1 s of open-hand frames and stays neutral until then.
-        self._lateral = LateralEstimator(
-            auto_calibrate=True, calibration_path=lateral_calibration_path)
+        # Guided-gesture calibration takes precedence when present;
+        # otherwise the startup auto-calibration learns the user's neutral
+        # lateral spread from ~1 s of open-hand frames (and stays neutral
+        # until then -- wrong offsets collapse the middle fingers together).
+        from p24grasp.teleop.calibration import load_hand_calibration  # noqa: E402
+
+        self._hand_calibration = load_hand_calibration()
+        if self._hand_calibration is not None:
+            self._lateral = LateralEstimator(
+                calibration=self._hand_calibration.lateral,
+                calibration_path=lateral_calibration_path)
+        else:
+            self._lateral = LateralEstimator(
+                auto_calibrate=True, calibration_path=lateral_calibration_path)
 
     def _make_prior_weights(self, config: dict) -> np.ndarray:
         """Per-DOF prior weights over the 16 active DOFs (rad scale).
@@ -454,7 +471,7 @@ class HybridRetargeter(_TipSpaceRetargeter):
 
     def retarget(self, angles: HandAngles,
                  keypoints3d: np.ndarray | None = None) -> np.ndarray:
-        q0 = scaling_q16(self.hand, angles)
+        q0 = scaling_q16(self.hand, angles, self._hand_calibration)
         targets = self.targets_from_keypoints(keypoints3d)
         if targets is None:
             # depth loss: fall back to the joint mapping (graceful)
@@ -488,32 +505,52 @@ class DirectAngleScaling:
 
     couple_dip_pip: bool = True
     distal_zero_deg: float = 10.0337
+    flexion_offsets_deg: np.ndarray | None = None  # (5, 3) per-user zero baseline
+    flexion_gains: np.ndarray | None = None  # (5, 3) per-user ROM gains
+    distal_total_gain: float | None = None  # per-user coupled distal gain
     _limits = P24_LIMITS
+
+    def _calibrated(self, flexion: np.ndarray) -> np.ndarray:
+        """Apply the per-user calibration when provided (guided gestures),
+        falling back to the anatomical population averages."""
+        offsets = np.zeros((5, 3)) if self.flexion_offsets_deg is None \
+            else np.asarray(self.flexion_offsets_deg)
+        if self.flexion_gains is None:
+            gains = np.vstack([THUMB_FLEX_SCALE,
+                               np.tile(FINGER_FLEX_SCALE, (4, 1))])
+        else:
+            gains = np.asarray(self.flexion_gains)
+        return (flexion - offsets) * gains
 
     def retarget(self, angles: HandAngles,
                  keypoints3d: np.ndarray | None = None) -> np.ndarray:
-        flexion = np.nan_to_num(angles.flexion, nan=0.0)
+        raw = np.nan_to_num(angles.flexion, nan=0.0)
+        flexion = self._calibrated(raw)
         abduction = np.nan_to_num(angles.abduction, nan=0.0)
         q = np.zeros(20)
         # Thumb: three unsigned bends -> j1, j2, j4; j3 neutral (the hybrid
         # optimizer covers thumb abduction/opposition from the tip targets).
-        q[0] = flexion[0, 0] * THUMB_FLEX_SCALE[0]
-        q[1] = flexion[0, 1] * THUMB_FLEX_SCALE[1]
-        q[3] = flexion[0, 2] * THUMB_FLEX_SCALE[2]
+        q[0] = flexion[0, 0]
+        q[1] = flexion[0, 1]
+        q[3] = flexion[0, 2]
         # Fingers: rows 1-4, cols [MCP, PIP, DIP].
         for row, finger_offset in enumerate(range(4, 20, 4)):
-            mcp = flexion[1 + row, 0] * FINGER_FLEX_SCALE[0]
-            q[finger_offset] = mcp
+            q[finger_offset] = flexion[1 + row, 0]
             q[finger_offset + 1] = abduction[1 + row] * ABDUCTION_SCALE
             if self.couple_dip_pip:
-                # split the compensated total distal bend across the 1:1 mimic pair
-                total = flexion[1 + row, 1] + flexion[1 + row, 2]
-                coupled = 0.5 * max(0.0, total - self.distal_zero_deg)
+                # split the compensated total distal bend across the 1:1
+                # mimic pair; the coupled branch consumes the RAW total
+                # (per-DOF gains are irrelevant here -- the distal total
+                # gain from the guided calibration covers it)
+                total = raw[1 + row, 1] + raw[1 + row, 2]
+                gain = self.distal_total_gain if self.distal_total_gain is not None \
+                    else 1.0
+                coupled = 0.5 * max(0.0, gain * total - self.distal_zero_deg)
                 q[finger_offset + 2] = coupled
                 q[finger_offset + 3] = coupled
             else:
-                q[finger_offset + 2] = flexion[1 + row, 1] * FINGER_FLEX_SCALE[1]
-                q[finger_offset + 3] = flexion[1 + row, 2] * FINGER_FLEX_SCALE[2]
+                q[finger_offset + 2] = flexion[1 + row, 1]
+                q[finger_offset + 3] = flexion[1 + row, 2]
         return self.clamp(q)
 
     def clamp(self, q: np.ndarray) -> np.ndarray:

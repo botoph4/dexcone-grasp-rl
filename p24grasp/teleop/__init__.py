@@ -6,6 +6,13 @@ Pipeline: RealSense D405 -> hand keypoints (MediaPipe) -> human joint angles
 See docs/HAND_TELEOP_RESEARCH.md for the design rationale.
 """
 from p24grasp.teleop.angles import HandAngles, angles_from_keypoints, dip_coupling_fixup
+from p24grasp.teleop.calibration import (
+    GuidedCalibration,
+    HandCalibration,
+    compute_calibration,
+    load_hand_calibration,
+    save_hand_calibration,
+)
 from p24grasp.teleop.camera import (
     Frame,
     FrameSource,
@@ -46,6 +53,11 @@ __all__ = [
     "HandAngles",
     "angles_from_keypoints",
     "dip_coupling_fixup",
+    "GuidedCalibration",
+    "HandCalibration",
+    "compute_calibration",
+    "load_hand_calibration",
+    "save_hand_calibration",
     "OneEuroFilter",
     "EMA",
     "KalmanCV",
