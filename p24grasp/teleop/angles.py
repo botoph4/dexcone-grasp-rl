@@ -9,9 +9,13 @@ Layout:
     abduction  (5,)   degrees: thumb CMC abduction, then finger MCP abductions
                                (signed; positive = away from the middle finger)
 
-Flexion: four-finger MCP is measured against the fitted palm plane
-(BEHAVIOR-style, removes the fan-geometry bias); PIP/DIP and the thumb
-CMC/MP/IP are inter-segment angles (0 = straight, 90 = right-angle bend).
+Flexion: all joints (thumb CMC/MP/IP, finger MCP/PIP/DIP) are inter-segment
+angles (0 = straight, 90 = right-angle bend) -- rotation-invariant and
+sign-correct for any hand orientation.  The palm-plane MCP variant
+(``signed_flexion_from_palm_plane``, kept for reference) flips sign when
+the hand turns (the fitted normal follows the rotation), which broke the
+fist measurement of the wrist-camera setup; its fan-geometry bias is
+removed per user by the guided calibration's open-hand baseline instead.
 
 Abduction is the signed angle in the palm plane between the finger ray and
 the wrist->middle-MCP ray (positive = away from the middle finger).  It
@@ -130,19 +134,21 @@ def signed_flexion_from_palm_plane(
 def angles_from_keypoints(det: HandDetection) -> HandAngles:
     """Compute flexion + abduction angles from a 21-keypoint detection.
 
-    Four-finger MCP flexion is measured relative to the fitted palm plane
-    (BEHAVIOR-style); PIP/DIP and the thumb remain inter-segment angles.
+    All flexions (thumb CMC and finger MCP/PIP/DIP) are inter-segment
+    angles -- rotation-invariant and sign-correct for any hand orientation.
+    The palm-plane MCP formulation (BEHAVIOR-style) was rejected for this
+    wrist-camera setup: when the hand turns (e.g. a fist naturally shows
+    the knuckles), the fitted palm normal follows the rotation and the
+    measured flexion flips sign.  Its fan-geometry bias is calibrated out
+    per user anyway (the open gesture provides the zero baseline).
+
     Joints whose keypoints are missing yield NaN angles and 0 visibility;
     the occlusion state machine treats them as unreliable and holds/estimates.
     """
     kp = det.keypoints3d
     flexion = np.full((5, 3), np.nan)
-    normal = _palm_plane(kp)
     for row, (base, mid, dip, tip) in enumerate(FINGER_IDS):
-        if row == 0:  # thumb: three unsigned inter-segment bends
-            flexion[row, 0] = _bone_angle_deg(kp[WRIST], kp[base], kp[mid])
-        else:  # four fingers: palm-plane MCP flexion
-            flexion[row, 0] = signed_flexion_from_palm_plane(kp[mid] - kp[base], normal)
+        flexion[row, 0] = _bone_angle_deg(kp[WRIST], kp[base], kp[mid])
         flexion[row, 1] = _bone_angle_deg(kp[base], kp[mid], kp[dip])
         flexion[row, 2] = _bone_angle_deg(kp[mid], kp[dip], kp[tip])
 

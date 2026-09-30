@@ -45,8 +45,8 @@ DISTAL_ZERO_DEG = 10.0337  # robot zero-pose neutral distal bend
 
 GESTURES = (
     ("open", "五指伸直并张开(侧摆最大),掌心朝向相机"),
-    ("together", "五指并拢(侧摆最小),掌心朝向相机"),
-    ("fist", "握拳(屈曲最大),保持掌心朝向相机、指根尽量折到 90 度"),
+    ("together", "五指并拢(侧摆最小)——手指保持伸直,仅侧向收拢"),
+    ("fist", "握拳(屈曲最大),指根尽量折到 90 度(手可自然翻转)"),
 )
 
 
@@ -281,6 +281,11 @@ class GuidedCalibration:
                 print(f"[calibrate]     四指 PIP+DIP 总中位数: "
                       f"{np.round(flexion_med[1:, 1] + flexion_med[1:, 2], 1).tolist()}",
                       flush=True)
+                if lateral_list:
+                    lat_med = np.median(np.asarray(lateral_list), axis=0)
+                    print(f"[calibrate]     四指侧摆原始角: "
+                          f"{np.round(np.rad2deg(lat_med), 1).tolist()} "
+                          f"(可用帧 {len(lateral_list)})", flush=True)
         finally:
             pipeline.close()
             if window is not None:
