@@ -46,22 +46,28 @@ def test_enters_hold_after_n_bad_frames():
     assert out.state == State.HOLD
 
 
-def test_hold_extrapolates_then_freezes():
+def test_hold_returns_to_the_rest_pose():
     sm = OcclusionStateMachine()
     _warm(sm, flexion=60.0)
     for _ in range(OcclusionParams().n_enter):
-        sm.update(_angles(presence=0.0, flexion=60.0), DT)
-    # early hold: extrapolation keeps the commanded angle near 60
-    early = sm.update(_angles(presence=0.0, flexion=60.0), DT)
-    assert early.angles.flexion[0, 0] > 50.0
-    # late hold: FROZEN at the last pose -- a hand leaving the view must not
-    # reset the mapping, so there is no relaxation toward rest (0)
-    late = early
-    for _ in range(60):  # 1 s at 60 fps
-        late = sm.update(_angles(presence=0.0, flexion=60.0), DT)
-    assert late.angles.flexion[0, 0] > 50.0
-    again = sm.update(_angles(presence=0.0, flexion=60.0), DT)
-    assert again.angles.flexion[0, 0] == late.angles.flexion[0, 0]
+        out = sm.update(_angles(presence=0.0, flexion=60.0), DT)
+    steps = []
+    prev = out.angles.flexion[0, 0]  # the HOLD-entry frame already stepped
+    for _ in range(30):  # 0.5 s in HOLD
+        out = sm.update(_angles(presence=0.0, flexion=60.0), DT)
+        steps.append(abs(out.angles.flexion[0, 0] - prev))
+        prev = out.angles.flexion[0, 0]
+    assert out.state == State.HOLD
+    assert max(steps) <= 5.0 + 1e-6  # rate-limited, no snap
+    np.testing.assert_allclose(out.angles.flexion, 0.0)  # open palm
+
+
+def test_reset_clears_filter_history():
+    sm = OcclusionStateMachine()
+    _warm(sm, flexion=60.0)
+    sm.reset()
+    assert sm._one_euro._prev_x is None  # pylint: disable=protected-access
+    np.testing.assert_allclose(sm._ema._prev, 0.0)  # pylint: disable=protected-access
 
 
 def test_recovery_has_no_jump():
@@ -79,7 +85,7 @@ def test_recovery_has_no_jump():
     assert step <= 5.0 + 1e-6
 
 
-def test_lost_holds_the_last_pose():
+def test_lost_commands_the_rest_pose():
     sm = OcclusionStateMachine()
     _warm(sm, flexion=60.0)
     for _ in range(OcclusionParams().n_enter):
@@ -89,9 +95,8 @@ def test_lost_holds_the_last_pose():
         out = sm.update(_angles(presence=0.0, flexion=60.0), DT)
     assert out.state == State.LOST
     assert not out.tracking_ok
-    # the pose is held, not commanded back to rest: re-opening the hand on
-    # every absence makes the mapping look like it restarts on re-entry
-    np.testing.assert_allclose(out.angles.flexion, 60.0, atol=2.0)
+    # the hand left the view: the command is the open palm (rest pose)
+    np.testing.assert_allclose(out.angles.flexion, 0.0)
 
 
 def test_recovery_does_not_require_full_dof_visibility():
@@ -110,29 +115,6 @@ def test_recovery_does_not_require_full_dof_visibility():
         angles.abduction_vis[:] = 0.3
         after = sm.update(angles, DT)
     assert after.state != State.LOST
-
-
-def test_hold_freezes_immediately_without_kf_history():
-    # tracking that never reached TRACKING (pinch-like: the index/middle
-    # DOFs hidden) leaves the Kalman filter uninitialized; a predict-only
-    # hold would then extrapolate ZEROS for every DOF and wipe the pose.
-    # The freeze must kick in at once and keep the tracked DOFs.
-    sm = OcclusionStateMachine()
-    for _ in range(90):
-        angles = _angles(presence=1.0, flexion=60.0)
-        angles.flexion_vis[1:3] = 0.3  # index+middle hidden: dof_frac < 0.6
-        angles.abduction_vis[:] = 0.3
-        sm.update(angles, DT)
-    assert sm.state == State.DEGRADED
-    assert not sm._kf.has_state  # pylint: disable=protected-access
-    assert sm._prev.flexion[0, 0] > 50.0  # thumb tracked fine
-    for _ in range(OcclusionParams().n_enter):
-        sm.update(_angles(presence=0.0, flexion=60.0), DT)
-    out = None
-    for _ in range(40):  # past hold_fast (0.5 s)
-        out = sm.update(_angles(presence=0.0, flexion=60.0), DT)
-    assert out.state == State.HOLD
-    assert out.angles.flexion[0, 0] > 50.0
 
 
 def test_degraded_partial_visibility_holds_hidden_dof():

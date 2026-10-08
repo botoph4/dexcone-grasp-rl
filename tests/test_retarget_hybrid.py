@@ -235,3 +235,35 @@ def test_glitched_wrist_depth_holds_targets():
     bad[0, 2] += 0.35  # wrist depth sampled the background behind the hand
     assert ret.targets_from_keypoints(bad) is None
     assert ret.pip_targets_from_keypoints(bad) is None
+
+
+def _reset_retargeter() -> HybridRetargeter:
+    """Deterministic retargeter: fixed scale, lateral disabled."""
+    import tempfile
+
+    tmp = Path(tempfile.mkdtemp())
+    return HybridRetargeter(scale=1.0, max_nfev=400,
+                            lateral_calibration_path=tmp / "lateral.json",
+                            hand_calibration_path=tmp / "hand.json",
+                            lateral_enabled=False)
+
+
+def test_reset_restores_first_startup_state():
+    ret = _reset_retargeter()
+    for _ in range(30):
+        ret.retarget(_angles(flexion=40.0), keypoints3d=_straight_keypoints())
+    ret.reset()
+    assert np.allclose(ret._q_prev, 0.0)  # pylint: disable=protected-access
+    assert np.allclose(ret._q20_prev, 0.0)  # pylint: disable=protected-access
+    assert ret._palm_frame is None  # pylint: disable=protected-access
+    assert ret._last_targets is None  # pylint: disable=protected-access
+    assert ret._human_reach == ret._human_reach_init  # pylint: disable=protected-access
+    # re-entry matches a freshly constructed retargeter (first-startup)
+    fresh = _reset_retargeter()
+    for _ in range(30):
+        q_fresh = fresh.retarget(_angles(flexion=40.0),
+                                 keypoints3d=_straight_keypoints())
+    for _ in range(30):
+        q_re = ret.retarget(_angles(flexion=40.0),
+                            keypoints3d=_straight_keypoints())
+    np.testing.assert_allclose(q_re, q_fresh, atol=1e-6)

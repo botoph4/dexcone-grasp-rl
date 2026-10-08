@@ -162,6 +162,9 @@ class _TipSpaceRetargeter:
         # of the observed human wrist->tip distances (slow decay so a hand
         # that never fully extends still converges).
         self._human_reach = 0.12 if scale is None else self._robot_reach / scale
+        # remembered for reset(): a hand removal returns the mapping to the
+        # first-startup state, including the reach estimate
+        self._human_reach_init = float(self._human_reach)
         self._palm_frame: np.ndarray | None = None  # smoothed camera->palm rotation
         # per-finger target memory: the index holds its last targets while
         # the thumb covers it (the keypoints then belong to the thumb)
@@ -424,6 +427,22 @@ class _TipSpaceRetargeter:
         """
         return np.radians(np.asarray(q20_deg))[self._active_from_urdf()]
 
+    def reset(self) -> None:
+        """Reset the mapping state for a fresh start.
+
+        The pipeline calls this when the hand leaves the view: the robot
+        returns to the open palm and the next detection re-runs the
+        first-startup logic.  Clears the solver warm start, the palm
+        frame, the adaptive reach (back to its startup value), and the
+        occlusion target holds.
+        """
+        self._q_prev = np.zeros(self.hand.n_active)
+        self._q20_prev = np.zeros(20)
+        self._palm_frame = None
+        self._last_targets = None
+        self._last_pip_targets = None
+        self._human_reach = self._human_reach_init
+
 
 class FingertipRetargeter(_TipSpaceRetargeter):
     """DexPilot-style fingertip-position retargeting on the P24 kinematics.
@@ -582,6 +601,15 @@ class HybridRetargeter(_TipSpaceRetargeter):
         else:
             self._lateral = LateralEstimator(
                 auto_calibrate=True, calibration_path=lateral_calibration_path)
+        # a reset() returns the reach estimate to this startup value (the
+        # calibrated open-hand reach when the calibration was loaded)
+        self._human_reach_init = float(self._human_reach)
+
+    def reset(self) -> None:
+        """Reset the mapping state for a fresh start (see the base class);
+        also restarts the lateral estimator back to its startup value."""
+        super().reset()
+        self._lateral.reset()
 
     def _make_prior_weights(self, config: dict) -> np.ndarray:
         """Per-DOF prior weights over the 16 active DOFs (rad scale).

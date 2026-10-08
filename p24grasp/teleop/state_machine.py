@@ -1,27 +1,27 @@
 """Occlusion state machine (docs/HAND_TELEOP_RESEARCH.md section 5.2).
 
 States:
-    TRACKING  normal: One Euro filter + ROM clamp + slew limit; KF keeps absorbing
+    TRACKING  normal: One Euro filter + ROM clamp + slew limit
     DEGRADED  hand presence in [t_lo, t_hi) or partially visible joints:
               visibility-weighted EMA + DIP~=0.7*PIP kinematic fixup (soft hold
               per hidden DOF)
-    HOLD      presence < t_lo for N_enter frames: CV-Kalman predict-only
-              extrapolation (hold_fast s, only when the KF has absorbed
-              measurements), then FREEZE at the last pose -- relaxing
-              toward the rest pose made every hand removal look like the
-              mapping restarted on re-entry, so the absence is held
-              instead; after hold_max s -> LOST (status downgrade only)
-    LOST      keeps holding the frozen pose; needs N_exit consecutive
+    HOLD      presence < t_lo for N_enter frames: the hand left the view --
+              the command returns to the REST pose (open palm, rate-limited)
+              and the filtering history is reset (see :meth:`reset`), so the
+              next detection re-runs the first-startup logic; after hold_max
+              s -> LOST (status downgrade only)
+    LOST      keeps commanding the rest pose; needs N_exit consecutive
               presence-good frames to recover (a re-entering pinch hides
               ~half the DOFs, so the exit must NOT require full DOF
               visibility)
     RECOVERY  (transient, first TRACKING frame after HOLD/LOST) slew-limited
-              catch-up or exponential blend -- filters are NOT reset (resets
-              cause the post-occlusion jump this machine exists to prevent)
+              catch-up or exponential blend from the rest pose -- with the
+              filters reset at HOLD entry this reads exactly like a fresh
+              startup
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 import numpy as np
@@ -31,7 +31,7 @@ from p24grasp.teleop.angles import (
     clamp_rom,
     dip_coupling_fixup,
 )
-from p24grasp.teleop.filters import EMA, KalmanCV, OneEuroFilter
+from p24grasp.teleop.filters import EMA, OneEuroFilter
 
 N_ANGLES = 5 * 3 + 5  # 15 flexion + 5 abduction
 
@@ -51,7 +51,6 @@ class OcclusionParams:
     t_lo: float = 0.5
     n_enter: int = 3  # consecutive hard-bad frames to enter HOLD
     n_exit: int = 5  # consecutive presence-good frames to leave HOLD/LOST
-    hold_fast: float = 0.5  # s of KF extrapolation
     hold_max: float = 3.0  # s after which HOLD is reported as LOST
     slew_max: float = 300.0  # deg/s recovery catch-up limit
     blend_tau: float = 0.1  # s recovery exponential blend
@@ -63,9 +62,8 @@ class OcclusionParams:
     ema_alpha: float = 0.7
     one_euro_f_cmin: float = 3.0
     one_euro_beta: float = 0.05
-    kf_r_var: float = 2.25
-    kf_sigma_accel: float = 60.0
     dip_coupling_k: float = 0.7
+    rest_pose: HandAngles = field(default_factory=HandAngles.zeros)
 
 
 @dataclass
@@ -92,8 +90,18 @@ class OcclusionStateMachine:
                                        self.params.one_euro_beta)
         self._ema = EMA(self.params.ema_alpha)
         self._ema.seed(np.zeros(N_ANGLES))  # start from the neutral command
-        self._kf = KalmanCV(dim=N_ANGLES, r_var=self.params.kf_r_var,
-                            sigma_accel=self.params.kf_sigma_accel)
+
+    def reset(self) -> None:
+        """Reset the filtering history as if the pipeline just started.
+
+        Called when the hand leaves the view: the command then returns to
+        the rest pose (open palm) and the next detection re-runs the
+        first-startup logic.  The current state, hysteresis counters, and
+        the previous output are kept, so the return to the rest pose
+        stays rate-limited instead of snapping.
+        """
+        self._one_euro.reset()
+        self._ema.seed(np.zeros(N_ANGLES))
 
     @staticmethod
     def _flatten(angles: HandAngles) -> np.ndarray:
@@ -237,7 +245,6 @@ class OcclusionStateMachine:
         flat = self._flatten(angles)
         valid = self._dof_valid(angles) & np.isfinite(flat)
         if self.state == State.TRACKING:
-            self._kf.update(flat, dt)  # keep absorbing normal measurements
             out = self._unflatten(self._one_euro(flat, dt), angles)
             # Keep the EMA warm at the current command so a transition into
             # DEGRADED holds from here, not from a stale seed.
@@ -255,25 +262,16 @@ class OcclusionStateMachine:
             return self._slew_limit(self._prev, out, dt)
         if self.state == State.HOLD:
             self._t_hold += dt
-            if self._t_hold <= p.hold_fast and self._kf.has_state:
-                out = self._unflatten(self._kf.predict(dt), angles)
-            else:
-                # freeze at the last commanded pose: a hand leaving the view
-                # must not reset the mapping (the old relaxation toward the
-                # rest pose made every re-entry look like a fresh start);
-                # _recover() re-syncs smoothly when the hand comes back.
-                # The KF branch is skipped when it never absorbed a
-                # measurement (tracking was only ever DEGRADED): predict()
-                # would extrapolate uninitialized zeros and wipe the hold.
-                if self._t_hold > p.hold_max:
-                    self.state = State.LOST
-                out = self._unflatten(self._flatten(self._prev), angles)
-            return out
-        # LOST: keep holding the frozen pose (never command the rest pose --
-        # re-opening the hand on every absence is exactly the "mapping
-        # restarts" behaviour); recovery is handled by the counters in
-        # update().
-        return self._unflatten(self._flatten(self._prev), angles)
+            if self._t_hold > p.hold_max:
+                self.state = State.LOST
+            # the hand left the view: return to the open palm, rate-limited
+            # (no snap); the pipeline resets the filtering/mapping state at
+            # HOLD entry so the next detection re-runs the first-startup
+            # logic
+            return self._slew_limit(self._prev, p.rest_pose, dt)
+        # LOST: keep commanding the rest pose; recovery is handled by the
+        # counters in update().
+        return self._slew_limit(self._prev, p.rest_pose, dt)
 
     def _recover(self, angles: HandAngles, dt: float) -> HandAngles:
         """First TRACKING frame after HOLD/LOST: smooth re-entry, no filter reset.

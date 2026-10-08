@@ -137,3 +137,39 @@ def test_reentry_transitions_smoothly_from_the_held_pose():
     assert max(steps) <= 5.0 + 1e-6
     assert out.command[0] < 5.0  # converged to the new (open) target
     pipeline.close()
+
+
+class _ResettableRetargeter(_SwitchRetargeter):
+    """Counts resets; after one it holds zeros (the open palm) when absent."""
+
+    def __init__(self):
+        super().__init__()
+        self.resets = 0
+
+    def reset(self):
+        self.resets += 1
+        self._prev = np.zeros(20)
+
+
+def test_hand_removal_resets_to_the_open_palm():
+    det = _FakeDetector()
+    ret = _ResettableRetargeter()
+    pipeline = TeleopPipeline(_FakeSource(70), det, retargeter=ret)
+    for _ in range(30):  # hand present: ramp to 80
+        out = pipeline.step()
+    assert out.command[0] > 75.0
+    det.hand = False
+    for _ in range(3):  # n_enter hard-bad frames -> HOLD entry -> reset
+        out = pipeline.step()
+    assert out.filtered.state.value == "hold"
+    assert ret.resets == 1
+    # the command returns to the open palm, rate-limited (no snap)
+    prev = out.command[0]
+    steps = []
+    for _ in range(30):
+        out = pipeline.step()
+        steps.append(abs(out.command[0] - prev))
+        prev = out.command[0]
+    assert max(steps) <= 5.0 + 1e-6
+    np.testing.assert_allclose(out.command[0], 0.0, atol=1e-9)
+    pipeline.close()

@@ -76,6 +76,7 @@ class TeleopPipeline:
         self._last_ts: float | None = None
         # command history for the rate limit: starts at the neutral pose
         self._last_command = np.zeros(20)
+        self._in_absence = False
         self.last_output: TeleopFrame | None = None
 
     def step(self) -> TeleopFrame:
@@ -93,6 +94,19 @@ class TeleopPipeline:
                           visibility=np.zeros(21), presence=0.0)
         raw = angles_from_keypoints(detection)
         filtered = self.state_machine.update(raw, dt)
+        if filtered.state in (State.HOLD, State.LOST):
+            if not self._in_absence:
+                # the hand left the view: reset to the open palm (the state
+                # machine slews the angles to the rest pose) and re-run the
+                # first-startup logic when it comes back (fresh filters and
+                # mapping state)
+                self._in_absence = True
+                self.state_machine.reset()
+                reset = getattr(self.retargeter, "reset", None)
+                if reset is not None:
+                    reset()
+        else:
+            self._in_absence = False
         command = self.retargeter.retarget(filtered.angles, detection.keypoints3d)
         command = self._slew_limit_command(command, dt)
         self._last_command = command.copy()
