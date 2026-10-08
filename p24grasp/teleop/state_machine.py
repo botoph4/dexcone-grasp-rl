@@ -94,10 +94,29 @@ class OcclusionStateMachine:
 
     @staticmethod
     def _flatten(angles: HandAngles) -> np.ndarray:
+        """Pack :class:`HandAngles` into a (20,) vector [15 flexion, 5 abduction].
+
+        Args:
+            angles: the :class:`HandAngles` to pack.
+
+        Returns:
+            (20,) float array.
+        """
         return np.concatenate([angles.flexion.ravel(), angles.abduction])
 
     @staticmethod
     def _unflatten(vec: np.ndarray, angles: HandAngles) -> HandAngles:
+        """Unpack a (20,) vector back into :class:`HandAngles`.
+
+        Args:
+            vec: (20,) array [15 flexion, 5 abduction].
+            angles: source of the visibility/presence fields (the angle
+                values come from ``vec``).
+
+        Returns:
+            :class:`HandAngles` with ``vec``'s values and ``angles``'
+            visibility/presence.
+        """
         return HandAngles(flexion=vec[:15].reshape(5, 3).copy(),
                           abduction=vec[15:20].copy(),
                           flexion_vis=angles.flexion_vis.copy(),
@@ -109,18 +128,50 @@ class OcclusionStateMachine:
 
         Requires MediaPipe landmark visibility AND a finite raw angle (depth
         lifting may fail under the keypoint even when MediaPipe is confident).
+
+        Args:
+            angles: raw (clamped, DIP-fixed) :class:`HandAngles` of this
+                frame.
+
+        Returns:
+            (20,) boolean mask, one entry per DOF.
         """
         vis = np.concatenate([angles.flexion_vis.ravel(), angles.abduction_vis])
         raw = np.concatenate([angles.flexion.ravel(), angles.abduction])
         return (vis >= self.params.min_vis) & np.isfinite(raw)
 
     def _slew_limit(self, prev: HandAngles, target: HandAngles, dt: float) -> HandAngles:
+        """Limit the per-frame command change to ``slew_max`` deg/s.
+
+        Args:
+            prev: the previous output :class:`HandAngles`.
+            target: the desired :class:`HandAngles` this frame.
+            dt: seconds since the previous frame.
+
+        Returns:
+            ``target`` moved toward at most ``slew_max * dt`` degrees per
+            DOF (a rate limit, not a filter -- steady commands pass
+            through unchanged).
+        """
         max_step = self.params.slew_max * dt
         flat = np.clip(self._flatten(target) - self._flatten(prev),
                        -max_step, max_step) + self._flatten(prev)
         return self._unflatten(flat, target)
 
     def update(self, angles: HandAngles, dt: float) -> FilteredAngles:
+        """Consume one raw-angle frame; run the state transitions and the
+        per-state filtering, and emit the smooth held-safe output.
+
+        Args:
+            angles: raw :class:`HandAngles` of this frame (may contain
+                NaN).
+            dt: seconds since the previous frame.
+
+        Returns:
+            :class:`FilteredAngles` with the smoothed angles, the current
+            :class:`State`, ``tracking_ok`` (False only in LOST), and the
+            visible-DOF fraction of this frame.
+        """
         p = self.params
         angles = clamp_rom(dip_coupling_fixup(angles, p.dip_coupling_k))
         dof_frac = self._dof_valid(angles).mean()
@@ -160,6 +211,16 @@ class OcclusionStateMachine:
                               dof_frac=dof_frac)
 
     def _step(self, angles: HandAngles, dt: float) -> HandAngles:
+        """Per-state filtering for non-transition frames (see the module
+        docstring for the per-state behaviour).
+
+        Args:
+            angles: raw (clamped, DIP-fixed) :class:`HandAngles`.
+            dt: seconds since the previous frame.
+
+        Returns:
+            The smoothed output :class:`HandAngles` for this frame.
+        """
         p = self.params
         flat = self._flatten(angles)
         valid = self._dof_valid(angles) & np.isfinite(flat)
@@ -200,7 +261,18 @@ class OcclusionStateMachine:
         return self._unflatten(self._flatten(self._prev), angles)
 
     def _recover(self, angles: HandAngles, dt: float) -> HandAngles:
-        """First TRACKING frame after HOLD/LOST: smooth re-entry, no filter reset."""
+        """First TRACKING frame after HOLD/LOST: smooth re-entry, no filter reset.
+
+        Args:
+            angles: raw (clamped, DIP-fixed) :class:`HandAngles` of the
+                re-detected hand.
+            dt: seconds since the previous frame.
+
+        Returns:
+            The blended/slew-limited output; the smoothers are re-seeded
+            at it so the next frames continue from here instead of from
+            pre-occlusion stale state.
+        """
         p = self.params
         flat = self._flatten(angles)
         target = self._unflatten(self._one_euro(flat, dt), angles)

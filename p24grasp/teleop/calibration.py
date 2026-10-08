@@ -64,6 +64,12 @@ class HandCalibration:
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
 
     def to_dict(self) -> dict:
+        """Serialize the calibration to a JSON-ready dict.
+
+        Returns:
+            dict with lateral offsets/gains/limits, the (5, 3) flexion
+            offsets/gains, the coupled distal gain, reach, and timestamp.
+        """
         return {
             "lateral": {
                 "offsets_deg": list(self.lateral.offsets_deg),
@@ -79,6 +85,17 @@ class HandCalibration:
 
     @classmethod
     def from_dict(cls, data: dict) -> "HandCalibration":
+        """Rebuild the calibration from :meth:`to_dict` output.
+
+        Args:
+            data: dict as produced by :meth:`to_dict`.
+
+        Returns:
+            :class:`HandCalibration` with numpy arrays restored.
+
+        Raises:
+            KeyError/ValueError: malformed data.
+        """
         return cls(
             lateral=LateralCalibration.from_config(data["lateral"]),
             flexion_offsets_deg=np.asarray(data["flexion_offsets_deg"], dtype=np.float64),
@@ -91,6 +108,12 @@ class HandCalibration:
 
 def save_hand_calibration(calibration: HandCalibration,
                           path: str | Path = DEFAULT_PATH) -> None:
+    """Write the calibration to JSON (default ~/.cache/p24grasp/...).
+
+    Args:
+        calibration: the :class:`HandCalibration` to persist.
+        path: target file path.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(calibration.to_dict(), indent=2), encoding="utf-8")
@@ -98,6 +121,14 @@ def save_hand_calibration(calibration: HandCalibration,
 
 
 def load_hand_calibration(path: str | Path | None = None) -> HandCalibration | None:
+    """Read a saved calibration; None when the file is absent or corrupt.
+
+    Args:
+        path: file to read (default: the shared default path).
+
+    Returns:
+        :class:`HandCalibration`, or None on any read/parse error.
+    """
     path = DEFAULT_PATH if path is None else Path(path)
     try:
         return HandCalibration.from_dict(
@@ -107,7 +138,16 @@ def load_hand_calibration(path: str | Path | None = None) -> HandCalibration | N
 
 
 def _nanmedian_safe(values: np.ndarray, axis=None):
-    """Median over finite values without the all-NaN RuntimeWarning."""
+    """Median over finite values without the all-NaN RuntimeWarning.
+
+    Args:
+        values: input array.
+        axis: axis to collapse (None = the whole array).
+
+    Returns:
+        Finite-value median along ``axis``; NaN where a slice has no
+        finite values (all-NaN slices yield NaN instead of a warning).
+    """
     values = np.asarray(values, dtype=np.float64)
     if axis is None:
         valid = values[np.isfinite(values)]
@@ -129,7 +169,22 @@ def compute_calibration(
     fist_flexion: np.ndarray,  # (5, 3) median flexion at the fist gesture
     reach_m: float,
 ) -> HandCalibration:
-    """Fit the lateral two-point mapping and the per-joint flexion gains."""
+    """Fit the lateral two-point mapping and the per-joint flexion gains.
+
+    Args:
+        open_flexion: (5, 3) median flexion (deg) at the open gesture.
+        open_lateral: (4,) median raw lateral (rad) at the open gesture.
+        together_lateral: (4,) median raw lateral (rad) at the together
+            gesture.
+        fist_flexion: (5, 3) median flexion (deg) at the fist gesture.
+        reach_m: median wrist->tip distance (m) at the open gesture.
+
+    Returns:
+        :class:`HandCalibration` with the two-point lateral fit (the
+        physical [together, open] span mapped onto the robot joint_2
+        limits), the per-DOF flexion gains (measured range -> robot ROM),
+        the coupled distal total gain, and the hand reach.
+    """
     # Lateral: map the PHYSICAL gesture direction onto the robot: the
     # together pose (adducted) goes to the inward limits and the open pose
     # (spread) to the outward limits.  The derotation raw sign convention
@@ -191,6 +246,17 @@ class GuidedCalibration:
 
     def __init__(self, source, detector, seconds_per_gesture: float = 3.0,
                  path: str | Path = DEFAULT_PATH, visualize: bool = True):
+        """Create the guided calibration session.
+
+        Args:
+            source: an open :class:`FrameSource` (camera or replay).
+            detector: a :class:`HandDetector` for the same frames.
+            seconds_per_gesture: collection window per gesture after the
+                countdown.
+            path: where the finished calibration is saved.
+            visualize: show the live cv2 window with keypoints and
+                per-gesture readouts.
+        """
         self.source = source
         self.detector = detector
         self.seconds_per_gesture = seconds_per_gesture
@@ -204,6 +270,14 @@ class GuidedCalibration:
 
     @staticmethod
     def _show(cv2, out, title: str, lines: list[str]) -> None:
+        """Draw one live calibration window frame.
+
+        Args:
+            cv2: the cv2 module (None-checked by the caller).
+            out: the current :class:`TeleopFrame`.
+            title: window title line.
+            lines: info-bar text lines.
+        """
         from p24grasp.teleop.viewer import (  # noqa: E402
             _uv_from_keypoints,
             render_calibration_frame,
@@ -217,6 +291,15 @@ class GuidedCalibration:
         cv2.waitKey(1)
 
     def run(self) -> HandCalibration:
+        """Drive the open/together/fist collection, fit, save, and print the
+        summary.  Waits for the hand before each countdown (no hand = the
+        prompt idles), collects with a grace period, and is forgiving of
+        short collections (>= 10 valid frames).
+
+        Returns:
+            The fitted :class:`HandCalibration` (also saved to
+            ``self.path``).
+        """
         from p24grasp.teleop.angles import angles_from_keypoints  # noqa: E402
         from p24grasp.teleop.pipeline import TeleopPipeline  # noqa: E402
 

@@ -58,6 +58,12 @@ class RealsenseSource:
     """
 
     def __init__(self, width: int = 640, height: int = 480, fps: int = 60):
+        """Create the source (does not open the camera until :meth:`start`).
+
+        Args:
+            width/height: color (and aligned depth) resolution.
+            fps: stream frame rate.
+        """
         self.width = width
         self.height = height
         self.fps = fps
@@ -66,6 +72,9 @@ class RealsenseSource:
         self._depth_scale = 1.0
 
     def start(self) -> None:
+        """Open the camera: RGB8 + Z16 streams at the configured mode,
+        depth units 0.1 mm, depth-to-color alignment.  Raises RuntimeError
+        when the device cannot open or the mode is unsupported."""
         import pyrealsense2 as rs  # noqa: E402
 
         config = rs.config()
@@ -82,6 +91,17 @@ class RealsenseSource:
         self._align = rs.align(rs.stream.color)
 
     def _intrinsics(self, frame):
+        """Color-stream intrinsics of an aligned frame.
+
+        Args:
+            frame: a RealSense video frame (must be the color stream).
+
+        Returns:
+            (fx, fy, cx, cy) tuple.
+
+        Raises:
+            RuntimeError: the frame is not a color frame.
+        """
         import pyrealsense2 as rs  # noqa: E402
 
         profile = frame.profile.as_video_stream_profile()
@@ -108,6 +128,7 @@ class RealsenseSource:
         return Frame(color=color, depth=depth, ts=ts, fx=fx, fy=fy, cx=cx, cy=cy)
 
     def close(self) -> None:
+        """Stop the RealSense pipeline (safe to call repeatedly)."""
         if self._pipeline is not None:
             self._pipeline.stop()
             self._pipeline = None
@@ -125,6 +146,18 @@ class OrbbecSource:
 
     def __init__(self, width: int = 848, height: int = 480, fps: int = 60,
                  frame_sync: bool = False, align_mode: str = "hw"):
+        """Create the source (does not open the camera until :meth:`start`).
+
+        Args:
+            width/height: color (and HW-aligned depth) resolution.
+            fps: stream frame rate.
+            frame_sync: enable the SDK frame-sync filter (default OFF: on
+                this camera/SDK/macOS combination the sync filter
+                intermittently never assembles a complete set).
+            align_mode: "hw" (device-side D2C) or "sw" (host-side D2C);
+                switch to "sw" if the hardware align delivers depth-only
+                framesets.
+        """
         # frame_sync defaults OFF: on this camera/SDK/macOS combination the
         # sync filter intermittently never assembles a complete set (the
         # color/depth timestamp domains drift), which stalls the pipeline.
@@ -162,6 +195,10 @@ class OrbbecSource:
         return config
 
     def start(self) -> None:
+        """Open the camera, negotiate the streams, and block until the first
+        complete RGB-D frameset arrives (the color stream lags depth by up
+        to ~5 s at startup).  Raises RuntimeError with a readable message
+        (including the sudo hint on macOS) when the device cannot open."""
         import pyorbbecsdk as ob  # noqa: E402
 
         try:
@@ -274,6 +311,15 @@ class OrbbecSource:
         print("pipeline stopped cleanly", flush=True)
 
     def read(self) -> Optional[Frame]:
+        """Block for the next complete RGB-D frameset (up to 5 s, with
+        progress warnings).
+
+        Returns:
+            :class:`Frame` with color (H, W, 3) uint8, depth (H, W)
+            float32 meters (NaN invalid), timestamps, and the color
+            intrinsics; None when no complete frameset arrived within the
+            wait budget.
+        """
         if self._pipeline is None:
             raise RuntimeError("start() must be called before read()")
         # wait_for_frames has a 1 s timeout, and early framesets may carry
@@ -327,6 +373,7 @@ class OrbbecSource:
                      fx=self._fx, fy=self._fy, cx=self._cx, cy=self._cy)
 
     def close(self) -> None:
+        """Stop the Orbbec pipeline (safe to call repeatedly)."""
         if self._pipeline is not None:
             self._pipeline.stop()
             self._pipeline = None
@@ -336,6 +383,15 @@ class ReplaySource:
     """Replay frames recorded by :func:`record_frames` (sorted *.npz)."""
 
     def __init__(self, directory: str | Path, loop: bool = False):
+        """Open a replay directory of recorded *.npz frames.
+
+        Args:
+            directory: folder written by :func:`record_frames`.
+            loop: wrap around to the first frame at end of stream.
+
+        Raises:
+            FileNotFoundError: no *.npz frames in the directory.
+        """
         self._paths = sorted(Path(directory).glob("*.npz"))
         if not self._paths:
             raise FileNotFoundError(f"no .npz frames in {directory}")
@@ -343,6 +399,12 @@ class ReplaySource:
         self._i = 0
 
     def read(self) -> Optional[Frame]:
+        """Load the next recorded frame (sorted filename order).
+
+        Returns:
+            :class:`Frame`, or None at end of stream (or, with loop=True,
+            wraps to the first frame).
+        """
         if self._i >= len(self._paths):
             return None
         data = np.load(self._paths[self._i])
@@ -354,12 +416,23 @@ class ReplaySource:
                      cx=float(data["cx"]), cy=float(data["cy"]))
 
     def close(self) -> None:
-        pass
+        """No resources to release (kept for the :class:`FrameSource`
+        protocol)."""
 
 
 def record_frames(source: FrameSource, out_dir: str | Path, n_frames: int,
                   print_every: int = 100) -> int:
-    """Record ``n_frames`` from ``source`` as *.npz files (for replay later)."""
+    """Record ``n_frames`` from ``source`` as *.npz files (for replay later).
+
+    Args:
+        source: an open :class:`FrameSource`.
+        out_dir: output directory (created when missing).
+        n_frames: maximum frames to record.
+        print_every: progress print interval.
+
+    Returns:
+        Number of frames actually saved (fewer when the source ends).
+    """
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     saved = 0
@@ -380,7 +453,16 @@ def record_frames(source: FrameSource, out_dir: str | Path, n_frames: int,
 
 
 def iter_frames(source: FrameSource, wall_clock: bool = False) -> Iterator[Frame]:
-    """Yield frames; optionally throttle to the recorded frame timestamps."""
+    """Yield frames; optionally throttle to the recorded frame timestamps.
+
+    Args:
+        source: any :class:`FrameSource`.
+        wall_clock: sleep so frames are yielded at their recorded pacing
+            (replay in real time).
+
+    Yields:
+        :class:`Frame` objects until the source is exhausted.
+    """
     prev_ts = None
     start = time.perf_counter()
     while True:

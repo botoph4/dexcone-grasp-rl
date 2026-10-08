@@ -77,7 +77,18 @@ class Retargeter(Protocol):
 
 def scaling_q16(hand, angles: HandAngles,
                  calibration: "HandCalibration | None" = None) -> np.ndarray:
-    """DirectAngleScaling output as the 16 active DOFs (rad, active order)."""
+    """DirectAngleScaling output as the 16 active DOFs (rad, active order).
+
+    Args:
+        hand: the :class:`HandModel` (chain slices/offsets).
+        angles: filtered human :class:`HandAngles`.
+        calibration: optional per-user :class:`HandCalibration` (flexion
+            offsets/gains and the coupled distal gain).
+
+    Returns:
+        (16,) active-DOF joint angles in radians, in ACTIVE order
+        (index, little, middle, ring, thumb).
+    """
     if calibration is not None:
         scaling = DirectAngleScaling(
             flexion_offsets_deg=calibration.flexion_offsets_deg,
@@ -117,6 +128,15 @@ class _TipSpaceRetargeter:
     FINGER_ACTIVE_TO_URDF = (0, 1, 2)
 
     def __init__(self, scale: float | None = None, max_nfev: int = 200):
+        """Shared solver scaffolding.
+
+        Args:
+            scale: fixed human->robot fingertip reach scale; None enables
+                the adaptive reach estimate (recommended -- a fixed 1.0
+                leaves the targets short of the robot tips, so straight
+                human fingers curl the robot hand).
+            max_nfev: scipy ``least_squares`` evaluation budget per solve.
+        """
         from p24grasp.model.urdf import HandModel  # noqa: E402
         from p24grasp.paths import urdf_path  # noqa: E402
 
@@ -149,6 +169,17 @@ class _TipSpaceRetargeter:
         self._last_pip_targets: np.ndarray | None = None
 
     def _chain(self, name):
+        """Look up a finger chain of the hand model by name.
+
+        Args:
+            name: chain name (index/little/middle/ring/thumb).
+
+        Returns:
+            The :class:`Chain` object.
+
+        Raises:
+            KeyError: unknown chain name.
+        """
         for chain in self.hand.chains:
             if chain.name == name:
                 return chain
@@ -156,7 +187,17 @@ class _TipSpaceRetargeter:
 
     def targets_from_keypoints(self, keypoints3d: np.ndarray) -> np.ndarray | None:
         """(5, 3) robot-palm-frame fingertip targets, or None when the needed
-        keypoints lack depth.  Updates the adaptive reach/scale estimate."""
+        keypoints lack depth.  Updates the adaptive reach/scale estimate.
+
+        Args:
+            keypoints3d: (21, 3) camera-frame keypoints.
+
+        Returns:
+            (5, 3) fingertip targets in the robot palm frame (chain order),
+            or None when the wrist or any fingertip is non-finite.  While
+            the thumb tip covers the index MCP, the index target holds its
+            last value (the keypoints then belong to the thumb).
+        """
         needed = [self.WRIST_ID, *[self.TIP_IDS[name] for name in self._chain_names]]
         if keypoints3d is None or not np.isfinite(keypoints3d[needed]).all():
             return None
@@ -173,7 +214,17 @@ class _TipSpaceRetargeter:
         return targets
 
     def pip_targets_from_keypoints(self, keypoints3d: np.ndarray) -> np.ndarray | None:
-        """(5, 3) robot-palm-frame PIP-joint targets (Vector10's proximal half)."""
+        """(5, 3) robot-palm-frame PIP-joint targets (Vector10's proximal half).
+
+        Args:
+            keypoints3d: (21, 3) camera-frame keypoints.
+
+        Returns:
+            (5, 3) PIP-joint targets in the robot palm frame (chain
+            order), or None when the wrist or any PIP keypoint is
+            non-finite; the index PIP holds its last value while the
+            thumb covers it.
+        """
         pip_ids = {"thumb": 3, "index": 6, "middle": 10, "ring": 14, "little": 18}
         needed = [self.WRIST_ID, *[pip_ids[name] for name in self._chain_names]]
         if keypoints3d is None or not np.isfinite(keypoints3d[needed]).all():
@@ -193,6 +244,17 @@ class _TipSpaceRetargeter:
         return pip_targets
 
     def _update_scale(self, rel: np.ndarray) -> float:
+        """Track the adaptive reach scale from wrist-relative tip vectors.
+
+        Args:
+            rel: (5, 3) wrist->fingertip vectors of this frame (chain
+                order).
+
+        Returns:
+            The robot/human reach ratio, clipped to [0.8, 1.8]; with a
+            fixed ``self.scale`` the estimate is not updated and the
+            fixed value is returned.
+        """
         if self.scale is None:
             observed = float(np.median(np.linalg.norm(rel, axis=1)))
             # track the running max (with slow decay) as the full-extension reach
@@ -209,6 +271,14 @@ class _TipSpaceRetargeter:
         x = in-plane wrist->middle-MCP (finger direction), y = in-plane
         wrist->thumb-MCP orthogonalized (thumb side).  The estimate is
         one-pole smoothed and re-orthonormalized (polar decomposition).
+
+        Args:
+            keypoints3d: (21, 3) camera-frame keypoints.
+
+        Returns:
+            (3, 3) smoothed camera->palm rotation (rows = palm axes);
+            keeps the previous frame on degenerate input, identity before
+            the first valid frame.
         """
         frame = fit_palm_frame(keypoints3d)
         if not np.isfinite(frame).all():
@@ -230,7 +300,15 @@ class _TipSpaceRetargeter:
     mount_t = np.zeros(3)
 
     def _tips(self, q16: np.ndarray) -> np.ndarray:
-        """(5, 3) robot fingertip positions at q16 (chain order)."""
+        """(5, 3) robot fingertip positions at q16 (chain order).
+
+        Args:
+            q16: (16,) active-DOF angles (rad).
+
+        Returns:
+            (5, 3) forward-kinematics fingertip positions in the robot
+            base frame, rows in chain order (index..thumb).
+        """
         tips = []
         for name in self._chain_names:
             start, end = self.hand.chain_slices[name]
@@ -238,7 +316,15 @@ class _TipSpaceRetargeter:
         return np.stack(tips)
 
     def _to_urdf_degrees(self, q16: np.ndarray) -> np.ndarray:
-        """16 active DOFs -> 20-joint URDF order (deg), DIP slaved to PIP."""
+        """Convert 16 active DOFs (rad) -> 20-joint URDF order (deg).
+
+        Args:
+            q16: (16,) active-DOF angles (rad).
+
+        Returns:
+            (20,) URDF-order joint angles in degrees; the four DIP joints
+            are slaved to their PIP (the URDF mimic coupling).
+        """
         q20 = np.zeros(20)
         thumb = self.hand.chain_slices["thumb"]
         q20[0:4] = q16[thumb[0]:thumb[1]]  # thumb joints are all active
@@ -254,7 +340,11 @@ class _TipSpaceRetargeter:
     def _active_from_urdf(self) -> np.ndarray:
         """Indices of the 16 active DOFs within the 20-joint URDF vector,
         in ACTIVE order: index, little, middle, ring, thumb (the thumb chain
-        is LAST in active order but FIRST in URDF order)."""
+        is LAST in active order but FIRST in URDF order).
+
+        Returns:
+            (16,) integer index array into a 20-joint URDF vector.
+        """
         indices = []
         for offset in (4, 8, 12, 16):  # fingers: (MCP, abd, PIP, DIP=mimic)
             indices.extend([offset + 0, offset + 1, offset + 2])
@@ -262,7 +352,14 @@ class _TipSpaceRetargeter:
         return np.array(indices)
 
     def _q20_to_active(self, q20_deg: np.ndarray) -> np.ndarray:
-        """20-joint URDF command (deg) -> 16 active DOFs (rad)."""
+        """Convert a 20-joint URDF command (deg) to 16 active DOFs (rad).
+
+        Args:
+            q20_deg: (20,) URDF-order joint angles in degrees.
+
+        Returns:
+            (16,) active-DOF angles in radians (ACTIVE order).
+        """
         return np.radians(np.asarray(q20_deg))[self._active_from_urdf()]
 
 
@@ -287,13 +384,31 @@ class FingertipRetargeter(_TipSpaceRetargeter):
             [pinch_weight, 1.0, 1.0, 1.0, pinch_weight])  # index..thumb chain order
 
     def _residuals(self, q16: np.ndarray, targets: np.ndarray) -> np.ndarray:
+        """Least-squares residual vector for the pure fingertip objective.
+
+        Args:
+            q16: (16,) candidate active-DOF angles (rad).
+            targets: (5, 3) fingertip targets (chain order).
+
+        Returns:
+            Stacked residuals: pinch-weighted tip errors (15,) + a small
+            smoothness term pulling toward the previous solution (16,).
+        """
         residuals = [self._weights[:, None] * (targets - self._tips(q16))]
         residuals.append(np.sqrt(self.smooth_weight) * (q16 - self._q_prev))
         return np.concatenate([r.ravel() for r in residuals])
 
     def solve(self, targets: np.ndarray) -> np.ndarray:
         """Solve for the 16 active DOFs (rad); returns the 20-joint command
-        in URDF order, degrees, with the mimic coupling applied."""
+        in URDF order, degrees, with the mimic coupling applied.
+
+        Args:
+            targets: (5, 3) fingertip targets (chain order).
+
+        Returns:
+            (20,) URDF-order joint command in degrees, warm-started from
+            the previous solution and clamped to the URDF limits.
+        """
         from scipy.optimize import least_squares  # noqa: E402
 
         result = least_squares(
@@ -307,7 +422,17 @@ class FingertipRetargeter(_TipSpaceRetargeter):
     def retarget(self, angles: HandAngles,
                  keypoints3d: np.ndarray | None = None) -> np.ndarray:
         """Per-frame retarget; holds the previous command when the required
-        keypoints are missing (occlusion / depth loss)."""
+        keypoints are missing (occlusion / depth loss).
+
+        Args:
+            angles: filtered human :class:`HandAngles` (unused by this
+                pure fingertip backend).
+            keypoints3d: (21, 3) camera-frame keypoints; None/NaN yields a
+                hold.
+
+        Returns:
+            (20,) URDF-order joint command in degrees.
+        """
         targets = self.targets_from_keypoints(keypoints3d)
         if targets is None:
             return self._q20_prev.copy()
@@ -401,6 +526,13 @@ class HybridRetargeter(_TipSpaceRetargeter):
 
         Thumb DOFs get zero prior (the optimizer owns the thumb); the
         four-finger classes use the reference-workspace strengths.
+
+        Args:
+            config: dict with keys "mcp_flexion"/"lateral"/"distal"
+                (per-class prior strengths).
+
+        Returns:
+            (16,) prior-weight array in ACTIVE order.
         """
         weights = np.zeros(self.hand.n_active)
         for name in self._chain_names:
@@ -424,7 +556,15 @@ class HybridRetargeter(_TipSpaceRetargeter):
     }
 
     def _pip_positions(self, q16: np.ndarray) -> np.ndarray:
-        """(5, 3) robot PIP-joint positions at q16 (chain order)."""
+        """(5, 3) robot PIP-joint positions at q16 (chain order).
+
+        Args:
+            q16: (16,) active-DOF angles (rad).
+
+        Returns:
+            (5, 3) forward-kinematics PIP-joint positions in the robot
+            base frame, rows in chain order.
+        """
         positions = []
         for name in self._chain_names:
             start, end = self.hand.chain_slices[name]
@@ -435,6 +575,21 @@ class HybridRetargeter(_TipSpaceRetargeter):
     def _residuals(self, q16: np.ndarray, targets: np.ndarray,
                    q0: np.ndarray, pinch_human: float,
                    pip_targets: np.ndarray | None) -> np.ndarray:
+        """Least-squares residual vector for the hybrid objective
+        (tips + optional PIPs + pinch distance + joint-mapping prior).
+
+        Args:
+            q16: (16,) candidate active-DOF angles (rad).
+            targets: (5, 3) fingertip targets (chain order).
+            q0: (16,) joint-mapping prior (active order, rad).
+            pinch_human: human thumb-index tip distance (m).
+            pip_targets: optional (5, 3) PIP targets (chain order).
+
+        Returns:
+            Stacked residuals: pinch-weighted tip errors (15,) + optional
+            PIP errors (15,) + scalar pinch-gap error (1,) + per-class
+            regularization toward q0 (16,).
+        """
         tips = self._tips(q16)
         residuals = [self.tip_weight * self._weights[:, None] * (targets - tips)]
         if pip_targets is not None:
@@ -456,7 +611,20 @@ class HybridRetargeter(_TipSpaceRetargeter):
     def solve(self, targets: np.ndarray, q0: np.ndarray,
               pip_targets: np.ndarray | None = None) -> np.ndarray:
         """Refine the joint-mapping prior q0 against the targets; returns the
-        20-joint command in URDF order, degrees."""
+        20-joint command in URDF order, degrees.
+
+        Args:
+            targets: (5, 3) fingertip targets (chain order).
+            q0: (16,) joint-mapping prior (active order, rad; clipped to
+                the URDF bounds exactly).
+            pip_targets: optional (5, 3) PIP targets (chain order).
+
+        Returns:
+            (20,) URDF-order joint command in degrees; warm-started from
+            whichever of the previous solution and q0 has the lower
+            residual (method="dogbox" -- trf stalls when the warm start
+            sits exactly on a joint bound).
+        """
         from scipy.optimize import least_squares  # noqa: E402
 
         # the prior must respect the bounds exactly: the URDF limits are
@@ -489,6 +657,20 @@ class HybridRetargeter(_TipSpaceRetargeter):
 
     def retarget(self, angles: HandAngles,
                  keypoints3d: np.ndarray | None = None) -> np.ndarray:
+        """Per-frame hybrid retarget: joint-mapping prior + tip/pinch
+        refinement; holds the last command when the keypoints are missing.
+
+        Args:
+            angles: filtered human :class:`HandAngles` (builds the joint
+                mapping prior q0; the calibrated lateral estimator writes
+                the four joint_2 values into q0, or neutral zeros with
+                ``lateral_enabled=False``).
+            keypoints3d: (21, 3) camera-frame keypoints; all-NaN yields a
+                hold of the last optimized command.
+
+        Returns:
+            (20,) URDF-order joint command in degrees.
+        """
         q0 = scaling_q16(self.hand, angles, self._hand_calibration)
         if self.lateral_enabled:
             # Shared calibrated lateral: always write the estimator's robot
@@ -546,7 +728,15 @@ class DirectAngleScaling:
 
     def _calibrated(self, flexion: np.ndarray) -> np.ndarray:
         """Apply the per-user calibration when provided (guided gestures),
-        falling back to the anatomical population averages."""
+        falling back to the anatomical population averages.
+
+        Args:
+            flexion: (5, 3) human flexion angles (deg).
+
+        Returns:
+            (5, 3) calibrated flexion = (flexion - offsets) * gains, ready
+            for the URDF limit clamp.
+        """
         offsets = np.zeros((5, 3)) if self.flexion_offsets_deg is None \
             else np.asarray(self.flexion_offsets_deg)
         if self.flexion_gains is None:
@@ -558,6 +748,18 @@ class DirectAngleScaling:
 
     def retarget(self, angles: HandAngles,
                  keypoints3d: np.ndarray | None = None) -> np.ndarray:
+        """Pure joint-angle mapping (no optimization): human angles ->
+        20-joint URDF command (deg).
+
+        Args:
+            angles: filtered human :class:`HandAngles` (NaN read as 0).
+            keypoints3d: ignored (kept for the :class:`Retargeter`
+                protocol).
+
+        Returns:
+            (20,) URDF-order joint command in degrees, clamped to the
+            URDF limits.
+        """
         raw = np.nan_to_num(angles.flexion, nan=0.0)
         flexion = self._calibrated(raw)
         abduction = np.nan_to_num(angles.abduction, nan=0.0)
@@ -588,7 +790,14 @@ class DirectAngleScaling:
         return self.clamp(q)
 
     def clamp(self, q: np.ndarray) -> np.ndarray:
-        """Clamp to URDF limits (deg)."""
+        """Clamp a 20-joint command to the URDF limits (deg).
+
+        Args:
+            q: (20,) joint angles (deg).
+
+        Returns:
+            (20,) clipped command.
+        """
         return np.clip(q, self._limits[:, 0], self._limits[:, 1])
 
 
@@ -643,6 +852,19 @@ class DexRetargetingAdapter:
 
     def retarget(self, angles: HandAngles,
                  keypoints3d: np.ndarray | None = None) -> np.ndarray:
+        """One dex-retargeting optimization step: human tip vectors ->
+        20-joint URDF command (deg).
+
+        Args:
+            angles: filtered human :class:`HandAngles` (unused; the
+                dex-retargeting optimizer works on tip vectors only).
+            keypoints3d: (21, 3) camera-frame keypoints; all-NaN yields a
+                hold of the previous command.
+
+        Returns:
+            (20,) URDF-order joint command in degrees (mimic applied by
+            the package's MimicJointKinematicAdaptor).
+        """
         needed = np.concatenate([[0], self._tip_ids])
         if keypoints3d is None or not np.isfinite(keypoints3d[needed]).all():
             return self._q20_prev.copy()

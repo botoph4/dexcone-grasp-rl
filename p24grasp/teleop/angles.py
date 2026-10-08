@@ -63,8 +63,22 @@ class HandAngles:
 
 
 def _bone_angle_deg(p: np.ndarray, center: np.ndarray, q: np.ndarray) -> float:
-    """Flexion at ``center`` = angle between proximal and distal bone
-    directions (0 = straight, 90 = right-angle bend); NaN-safe."""
+    """Inter-segment flexion angle (deg) at ``center``, NaN-safe.
+
+    Flexion = 180 - angle(center->p, center->q): 0 deg straight, 90 deg
+    right-angle bend.  The sign-free inter-segment form is rotation
+    invariant, so it reads the same for any hand orientation (unlike
+    palm-plane projections, which flip when the hand turns).
+
+    Args:
+        p: proximal keypoint (3,) in the camera frame.
+        center: the joint's keypoint (3,).
+        q: distal keypoint (3,).
+
+    Returns:
+        Flexion angle in degrees, or NaN when either bone is degenerate
+        (zero length).
+    """
     a = p - center  # from the joint back toward the proximal keypoint
     b = q - center  # from the joint toward the distal keypoint
     na, nb = np.linalg.norm(a), np.linalg.norm(b)
@@ -76,7 +90,20 @@ def _bone_angle_deg(p: np.ndarray, center: np.ndarray, q: np.ndarray) -> float:
 
 def _signed_angle_deg(dir_vec: np.ndarray, ref_vec: np.ndarray,
                       plane_normal: np.ndarray) -> float:
-    """Signed angle from ``ref_vec`` to ``dir_vec`` around ``plane_normal`` (deg)."""
+    """Signed angle (deg) from ``ref_vec`` to ``dir_vec`` around ``plane_normal``.
+
+    Positive = counter-clockwise seen from the normal's tip (right-hand
+    rule); used for the palm-plane abduction measurement.
+
+    Args:
+        dir_vec: measured direction (3,).
+        ref_vec: reference direction (3,).
+        plane_normal: rotation axis (3,), typically the palm normal.
+
+    Returns:
+        Signed angle in degrees in (-180, 180], NaN when either vector is
+        degenerate.
+    """
     nd, nr = np.linalg.norm(dir_vec), np.linalg.norm(ref_vec)
     if nd < 1e-9 or nr < 1e-9:
         return np.nan
@@ -86,10 +113,17 @@ def _signed_angle_deg(dir_vec: np.ndarray, ref_vec: np.ndarray,
 
 
 def _palm_plane(kp: np.ndarray) -> np.ndarray:
-    """Unit normal of the best-fit palm plane (wrist + 5 MCPs).
+    """Unit palm-plane normal fitted from the wrist + 5 MCP keypoints.
 
-    Oriented toward the camera (+z), so signed abduction around it has a
+    Least-squares plane via SVD over the valid points; the normal is
+    oriented toward the camera (+z) so signed angles around it have a
     stable sign convention.  Keypoint rows containing NaN are skipped.
+
+    Args:
+        kp: (21, 3) camera-frame keypoints.
+
+    Returns:
+        (3,) unit normal; zeros when fewer than 3 valid points remain.
     """
     pts = kp[np.array([WRIST, 1, 5, 9, 13, 17])]
     pts = pts[np.isfinite(pts).all(axis=1)]
@@ -115,6 +149,17 @@ def signed_flexion_from_palm_plane(
     fan-shaped metacarpal geometry inside the palm, which the wrist->MCP
     reference mixes into the flexion.  The palm normal points toward the
     camera (out of the palm), so flexion (toward the palm) is positive.
+    NOTE: rejected for this wrist-camera setup -- when the hand turns, the
+    fitted normal follows the rotation and the measured flexion flips sign.
+
+    Args:
+        finger_vector: proximal phalanx direction (3,) in the camera frame.
+        palm_normal: unit palm normal (3,) pointing out of the palm.
+        epsilon: degenerate-norm guard (m).
+
+    Returns:
+        Flexion in degrees (positive toward the palm), NaN on degenerate
+        input.
     """
     vector = np.asarray(finger_vector, dtype=np.float64)
     normal = np.asarray(palm_normal, dtype=np.float64)
@@ -133,7 +178,22 @@ def signed_flexion_from_palm_plane(
 
 def thumb_over_finger(keypoints3d: np.ndarray, base_index: int,
                        distance_m: float = 0.025) -> bool:
-    """True when the thumb tip covers the finger base's neighbourhood."""
+    """Whether the thumb tip covers a finger base's neighbourhood.
+
+    Used for thumb-over-index/middle occlusion: when the thumb tip covers
+    a finger's proximal joints, MediaPipe's keypoints (and the depth under
+    them) belong to the thumb, so an unbent finger would measure spurious
+    flexion.  The affected finger's visibility is then damped below the
+    state machine's threshold so those DOFs are held instead of followed.
+
+    Args:
+        keypoints3d: (21, 3) camera-frame keypoints.
+        base_index: MCP keypoint index of the finger to check (e.g. 5).
+        distance_m: cover radius (m); default 0.025.
+
+    Returns:
+        True when the thumb tip lies within ``distance_m`` of the base.
+    """
     kp = np.asarray(keypoints3d, dtype=np.float64)
     thumb_tip = kp[4]
     if not np.isfinite(thumb_tip).all() or not np.isfinite(kp[base_index]).all():
@@ -142,18 +202,28 @@ def thumb_over_finger(keypoints3d: np.ndarray, base_index: int,
 
 
 def angles_from_keypoints(det: HandDetection) -> HandAngles:
-    """Compute flexion + abduction angles from a 21-keypoint detection.
+    """Flexion + abduction + per-DOF visibility from a 21-keypoint detection.
 
-    All flexions (thumb CMC and finger MCP/PIP/DIP) are inter-segment
-    angles -- rotation-invariant and sign-correct for any hand orientation.
-    The palm-plane MCP formulation (BEHAVIOR-style) was rejected for this
-    wrist-camera setup: when the hand turns (e.g. a fist naturally shows
-    the knuckles), the fitted palm normal follows the rotation and the
-    measured flexion flips sign.  Its fan-geometry bias is calibrated out
-    per user anyway (the open gesture provides the zero baseline).
+    Flexions (thumb CMC/MP/IP, finger MCP/PIP/DIP) are inter-segment
+    angles -- rotation-invariant and sign-correct for any hand orientation
+    (the palm-plane MCP formulation was rejected for this wrist-camera
+    setup: when the hand turns, the fitted normal follows the rotation and
+    the measured flexion flips sign).  Abduction is the signed in-palm-
+    plane angle between each finger ray and the wrist->middle-MCP
+    reference (positive = away from the middle finger).  The thumb-over-
+    finger occlusion rule damps index/middle visibility before the per-DOF
+    visibility minima are taken.
 
-    Joints whose keypoints are missing yield NaN angles and 0 visibility;
-    the occlusion state machine treats them as unreliable and holds/estimates.
+    Args:
+        det: a :class:`HandDetection` with keypoints3d (21, 3), visibility
+            (21,), and presence.
+
+    Returns:
+        :class:`HandAngles` with flexion (5, 3) deg, abduction (5,) deg,
+        per-DOF visibility (min of the contributing keypoints), and
+        presence; joints whose keypoints are missing yield NaN angles with
+        0 visibility (the occlusion state machine treats them as
+        unreliable and holds/estimates).
     """
     kp = det.keypoints3d
     flexion = np.full((5, 3), np.nan)
@@ -197,10 +267,21 @@ def angles_from_keypoints(det: HandDetection) -> HandAngles:
 
 
 def dip_coupling_fixup(angles: HandAngles, k: float = 0.7) -> HandAngles:
-    """Apply the anatomical DIP ~= k*PIP coupling where DIP is unreliable.
+    """Blend each DIP toward the anatomical coupling DIP ~= k*PIP.
 
-    Blends the measured DIP toward k*PIP weighted by (1 - vis): a hidden DIP
-    inherits the coupled estimate, a fully visible DIP is left untouched.
+    Blends the measured DIP toward k*PIP weighted by (1 - vis): a hidden
+    DIP inherits the coupled estimate, a fully visible DIP is left
+    untouched.  A kinematic fallback applied before the occlusion state
+    machine (the temporal filters hold hidden DOFs afterwards).
+
+    Args:
+        angles: measured :class:`HandAngles` (may contain NaN); not
+            modified.
+        k: coupling constant (default 0.7).
+
+    Returns:
+        Copy with ``flexion[1:, 2]`` fixed up; NaN DIPs become k*PIP,
+        clamped to [0, 90] deg.
     """
     out = HandAngles(flexion=angles.flexion.copy(), abduction=angles.abduction.copy(),
                      flexion_vis=angles.flexion_vis.copy(),
@@ -219,7 +300,15 @@ def dip_coupling_fixup(angles: HandAngles, k: float = 0.7) -> HandAngles:
 
 
 def clamp_rom(angles: HandAngles) -> HandAngles:
-    """Clamp all angles to anatomical ranges (NaN-safe: NaN stays NaN)."""
+    """Clamp all angles to anatomical ranges (NaN-safe: NaN stays NaN).
+
+    Args:
+        angles: :class:`HandAngles` to clamp (not modified).
+
+    Returns:
+        Copy with flexion clipped to [0, HUMAN_FLEXION_ROM] and abduction
+        to +/-HUMAN_ABDUCTION_ROM per DOF.
+    """
     out = HandAngles(flexion=angles.flexion.copy(), abduction=angles.abduction.copy(),
                      flexion_vis=angles.flexion_vis.copy(),
                      abduction_vis=angles.abduction_vis.copy(),

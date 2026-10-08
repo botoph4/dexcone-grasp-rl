@@ -26,7 +26,15 @@ N_JOINTS = 21
 
 
 def ensure_model(model_path: str | Path | None = None) -> Path:
-    """Return the hand_landmarker.task path, downloading it if missing."""
+    """Return the hand_landmarker.task path, downloading it if missing.
+
+    Args:
+        model_path: explicit model file; None = the shared cache path
+            (~/.cache/p24grasp/hand_landmarker.task).
+
+    Returns:
+        The existing (or freshly downloaded) model file path.
+    """
     path = Path(model_path) if model_path else DEFAULT_MODEL_PATH
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -61,6 +69,12 @@ def sanitize_visibility(values: np.ndarray) -> np.ndarray:
     would zero out every DOF's confidence in the state machine.  Treat
     missing data as "visible"; DOF validity then falls back to whether the
     angle itself is finite (depth lifting succeeded).
+
+    Args:
+        values: raw per-landmark visibility array from MediaPipe.
+
+    Returns:
+        Same-shape array with non-finite entries replaced by 1.0.
     """
     out = np.asarray(values, dtype=np.float64)
     return np.where(np.isfinite(out), out, 1.0)
@@ -75,6 +89,19 @@ class HandDetector:
                  min_tracking_confidence: float = 0.5,
                  min_presence_confidence: float = 0.5,
                  depth_median_window: int = 3):
+        """Create the detector (the MediaPipe landmarker initializes lazily
+        on the first :meth:`detect` call).
+
+        Args:
+            model_path: hand_landmarker.task path (auto-downloaded when
+                missing).
+            num_hands: maximum tracked hands (the wrist-mounted setup
+                takes the closest/first).
+            min_detection_confidence / min_tracking_confidence /
+                min_presence_confidence: MediaPipe landmarker thresholds.
+            depth_median_window: median-filter window size (px) used to
+                sample depth under each keypoint.
+        """
         self.model_path = ensure_model(model_path)
         self.num_hands = num_hands
         self.min_detection_confidence = min_detection_confidence
@@ -85,6 +112,11 @@ class HandDetector:
         self._last_ts_ms = -1
 
     def _init(self):
+        """Create the MediaPipe HandLandmarker (VIDEO mode, CPU delegate).
+
+        Returns:
+            The mediapipe module (also stored on ``self._landmarker``).
+        """
         import mediapipe as mp  # noqa: E402
         from mediapipe.tasks import python as mp_python  # noqa: E402
         from mediapipe.tasks.python import vision  # noqa: E402
@@ -108,7 +140,17 @@ class HandDetector:
         return mp
 
     def detect(self, frame: Frame) -> HandDetection:
-        """Detect the hand in ``frame``; returns an empty detection when absent."""
+        """Detect the hand in ``frame``; returns an empty detection when absent.
+
+        Args:
+            frame: one aligned RGB-D :class:`Frame`.
+
+        Returns:
+            :class:`HandDetection` with (21, 3) lifted keypoints (meters,
+            camera frame), per-landmark visibility, presence 1.0/0.0, and
+            the handedness label; all-NaN keypoints when no hand (or no
+            valid depth) is present.
+        """
         empty = HandDetection(keypoints3d=np.full((N_JOINTS, 3), np.nan),
                               visibility=np.zeros(N_JOINTS), presence=0.0)
         if frame.color.size == 0:
@@ -138,7 +180,18 @@ class HandDetector:
                              presence=1.0, handedness=handedness)
 
     def _lift(self, frame: Frame, u: np.ndarray, v: np.ndarray) -> np.ndarray:
-        """Lift pixel keypoints to camera-frame 3D via median depth sampling."""
+        """Lift pixel keypoints to camera-frame 3D via median depth sampling.
+
+        Args:
+            frame: the aligned RGB-D frame (depth meters, intrinsics).
+            u: (21,) keypoint x pixels.
+            v: (21,) keypoint y pixels.
+
+        Returns:
+            (21, 3) camera-frame keypoints (x right, y down, z forward in
+            meters); NaN rows where the sampled depth window has no valid
+            pixels.
+        """
         pts = np.full((N_JOINTS, 3), np.nan)
         h, w = frame.depth.shape
         half = self.depth_median_window // 2
@@ -158,6 +211,7 @@ class HandDetector:
         return pts
 
     def close(self) -> None:
+        """Release the MediaPipe landmarker (safe to call repeatedly)."""
         if self._landmarker is not None:
             self._landmarker.close()
             self._landmarker = None

@@ -33,7 +33,15 @@ HUMAN_SCALE = 0.72  # virtual human hand size relative to the P24 reach
 def sample_human_angles(rng: np.random.Generator, n: int) -> np.ndarray:
     """(n, 20) human-angle vectors (deg): 15 flexion (thumb CMC/MP/IP,
     fingers MCP/PIP/DIP) + 5 abduction.  Fingers flex together (grasp-like),
-    DIP ~= 0.7*PIP (anatomical coupling)."""
+    DIP ~= 0.7*PIP (anatomical coupling).
+
+    Args:
+        rng: numpy random generator (seeded by the caller).
+        n: number of pose samples.
+
+    Returns:
+        (n, 20) human angle matrix in degrees.
+    """
     flexion = np.zeros((n, 15))
     # per-pose grasp amount shared across fingers, with per-finger noise
     grasp = rng.beta(2.0, 2.0, size=(n, 5))
@@ -59,6 +67,15 @@ def make_dataset(n: int, seed: int = 0, teacher: HybridRetargeter | None = None)
 
     Virtual-human targets: the P24 FK at the scaled human pose, then the
     whole tip cloud shrunk by HUMAN_SCALE, mimicking a smaller human hand.
+
+    Args:
+        n: number of training poses.
+        seed: RNG seed for the pose sampling.
+        teacher: solver/teacher (default: a HybridRetargeter with fixed
+            scale 1.0).
+
+    Returns:
+        (X (n, 20) deg, Y (n, 16) rad) training pair.
     """
     from p24grasp.teleop.angles import HandAngles  # noqa: E402
 
@@ -82,6 +99,11 @@ def make_dataset(n: int, seed: int = 0, teacher: HybridRetargeter | None = None)
 
 
 def _build_mlp():
+    """Build the 20 -> 256 -> 256 -> 16 MLP (ReLU hidden activations).
+
+    Returns:
+        A torch Sequential (requires torch; training-time only).
+    """
     import torch  # noqa: E402
 
     layers = []
@@ -95,7 +117,18 @@ def _build_mlp():
 
 def train_geort(weights_path: str | Path | None = None, n_samples: int = 4000,
                 epochs: int = 120, batch_size: int = 256, seed: int = 0):
-    """Train the MLP and save the weights; returns (holdout tip error mm)."""
+    """Train the MLP and save the weights; returns (holdout tip error mm).
+
+    Args:
+        weights_path: output .npz path (default: the shared cache path).
+        n_samples: dataset size (90/10 train/val split).
+        epochs: full passes over the training set.
+        batch_size: SGD minibatch size.
+        seed: RNG seed for the dataset and the weight init.
+
+    Returns:
+        Holdout mean fingertip error in millimeters.
+    """
     import torch  # noqa: E402
 
     path = Path(weights_path) if weights_path else DEFAULT_WEIGHTS
@@ -143,7 +176,15 @@ def train_geort(weights_path: str | Path | None = None, n_samples: int = 4000,
 
 def _tip_error_mm(y_pred: np.ndarray, y_ref: np.ndarray) -> float:
     """Mean fingertip position error (mm) between FK(predicted q) and
-    FK(reference q): the honest geometric metric for retargeting quality."""
+    FK(reference q): the honest geometric metric for retargeting quality.
+
+    Args:
+        y_pred: (n, 16) predicted active DOFs (rad).
+        y_ref: (n, 16) reference (teacher) active DOFs (rad).
+
+    Returns:
+        Mean over samples of the mean per-finger tip distance, in mm.
+    """
     teacher = HybridRetargeter(scale=1.0, max_nfev=1)
     errors = []
     for q_pred, q_ref in zip(y_pred, y_ref):
@@ -162,6 +203,12 @@ class GeoRtRetargeter:
     """
 
     def __init__(self, weights_path: str | Path | None = None):
+        """Load the trained weights, or fall back to the hybrid retargeter.
+
+        Args:
+            weights_path: .npz from :func:`train_geort` (default: the
+                shared cache path).
+        """
         path = Path(weights_path) if weights_path else DEFAULT_WEIGHTS
         self._layers = None
         self._fallback = HybridRetargeter()
@@ -184,6 +231,14 @@ class GeoRtRetargeter:
             self._error = exc
 
     def _forward(self, x: np.ndarray) -> np.ndarray:
+        """Pure-numpy MLP forward pass (no torch on the deployment board).
+
+        Args:
+            x: (20,) human angle input (deg).
+
+        Returns:
+            (16,) active-DOF output (rad).
+        """
         out = x
         for i in range(0, len(self._layers), 2):
             weight = self._layers[i]
@@ -194,6 +249,17 @@ class GeoRtRetargeter:
         return out
 
     def retarget(self, angles, keypoints3d: np.ndarray | None = None) -> np.ndarray:
+        """Map human angles to the 20-joint URDF command (deg).
+
+        Args:
+            angles: filtered human :class:`HandAngles` (NaN read as 0).
+            keypoints3d: unused; passed to the hybrid fallback when no
+                weights are loaded.
+
+        Returns:
+            (20,) URDF-order joint command in degrees, clamped to the
+            URDF limits.
+        """
         if self._layers is None:
             return self._fallback.retarget(angles, keypoints3d)
         flexion = np.nan_to_num(angles.flexion, nan=0.0).ravel()

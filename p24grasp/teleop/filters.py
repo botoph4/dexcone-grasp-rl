@@ -15,7 +15,15 @@ import numpy as np
 
 
 class OneEuroFilter:
-    """Speed-adaptive low-pass (Casiez's One Euro); operates per-DOF columns."""
+    """Speed-adaptive low-pass (Casiez's One Euro); operates per-DOF columns.
+
+    Args:
+        f_cmin: minimum cutoff frequency (Hz); 3-4 Hz for finger angles,
+            NOT the 1 Hz defaults -- measured hand-tracking studies show
+            1 Hz eats ~half the motion path length.
+        beta: speed coefficient: cutoff grows with the measured derivative.
+        d_cutoff: cutoff (Hz) of the derivative low-pass.
+    """
 
     def __init__(self, f_cmin: float = 3.0, beta: float = 0.05,
                  d_cutoff: float = 1.0):
@@ -31,6 +39,17 @@ class OneEuroFilter:
         return 1.0 / (1.0 + tau / dt)
 
     def __call__(self, x: np.ndarray, dt: float) -> np.ndarray:
+        """Filter one sample per DOF column.
+
+        Args:
+            x: measurement array of shape (dim,) or (..., dim); the last
+                axis holds the per-DOF values.
+            dt: seconds since the previous call.
+
+        Returns:
+            Smoothed array of the same shape; NaN samples hold the
+            previous output per-DOF (the filter never outputs NaN).
+        """
         x = np.asarray(x, dtype=np.float64)
         if self._prev_x is None or dt <= 0:
             self._prev_x = x.copy()
@@ -57,13 +76,22 @@ class OneEuroFilter:
         self._prev_dx = None
 
     def seed(self, x: np.ndarray) -> None:
-        """Re-anchor the filter history at ``x`` (occlusion recovery re-entry)."""
+        """Re-anchor the filter history at ``x`` (occlusion recovery re-entry).
+
+        Args:
+            x: array with the same shape as the filtered samples.
+        """
         self._prev_x = np.asarray(x, dtype=np.float64).copy()
         self._prev_dx = np.zeros_like(self._prev_x)
 
 
 class EMA:
-    """Exponential moving average with per-DOF invalid-sample hold."""
+    """Exponential moving average with per-DOF invalid-sample hold.
+
+    Args:
+        alpha: update weight per call; can be overridden per-sample via
+            the ``alpha`` argument of :meth:`__call__`.
+    """
 
     def __init__(self, alpha: float = 0.7):
         self.alpha = alpha
@@ -71,6 +99,19 @@ class EMA:
 
     def __call__(self, x: np.ndarray, valid: np.ndarray | None = None,
                  alpha: np.ndarray | None = None) -> np.ndarray:
+        """Filter one sample; invalid DOFs hold their previous output.
+
+        Args:
+            x: measurement array (per-DOF along the last axis).
+            valid: optional boolean mask; combined with finiteness of x
+                (default: finite x is valid).
+            alpha: optional per-DOF update weight (default: ``self.alpha``).
+
+        Returns:
+            Smoothed array of the same shape; skipping an update for
+            invalid samples makes the output hold its last valid value
+            (implicit occlusion hold).
+        """
         x = np.asarray(x, dtype=np.float64)
         if valid is None:
             valid = np.isfinite(x)
@@ -86,9 +127,15 @@ class EMA:
         return out
 
     def reset(self) -> None:
+        """Drop history; the next sample becomes the new anchor."""
         self._prev = None
 
     def seed(self, x: np.ndarray) -> None:
+        """Re-anchor the history at ``x``.
+
+        Args:
+            x: array with the same shape as the filtered samples.
+        """
         self._prev = np.asarray(x, dtype=np.float64).copy()
 
 
@@ -104,6 +151,15 @@ class KalmanCV:
 
     def __init__(self, dim: int, r_var: float = 2.25,  # (1.5 deg)^2
                  sigma_accel: float = 60.0):  # deg/s^2, ~max accel / 3
+        """Per-DOF constant-velocity Kalman filter (vectorized over DOFs).
+
+        Args:
+            dim: number of DOFs (independent scalar filters).
+            r_var: measurement noise variance per DOF (deg^2).
+            sigma_accel: process-noise acceleration (deg/s^2): how far the
+                predict-only extrapolation may drift during an occlusion
+                hold.
+        """
         self.dim = dim
         self.r_var = r_var
         self.sigma_accel = sigma_accel
@@ -122,7 +178,15 @@ class KalmanCV:
         return np.array([[1.0, dt], [0.0, 1.0]])
 
     def predict(self, dt: float) -> np.ndarray:
-        """Predict-only step (used during occlusion holds); returns positions."""
+        """Predict-only step (used during occlusion holds); returns positions.
+
+        Args:
+            dt: seconds since the previous update/predict.
+
+        Returns:
+            (dim,) predicted positions; covariance grows with dt so the
+            uncertainty reflects the extrapolation time.
+        """
         f = self._transition(dt)
         self._x = f @ self._x
         q = self._q(dt)
@@ -134,7 +198,17 @@ class KalmanCV:
         """Measure z (dim,); first sighting initializes position, the second
         initializes velocity from the finite difference (waiting for Q to
         "grow" a velocity takes hundreds of frames); gated outliers are
-        skipped (predict-only) instead of corrupting the state."""
+        skipped (predict-only) instead of corrupting the state.
+
+        Args:
+            z: (dim,) measurement; NaN DOFs are skipped (predict-only).
+            dt: seconds since the previous update/predict.
+            gate: innovation gating threshold in standard deviations
+                (default 3.0).
+
+        Returns:
+            (dim,) filtered positions after the update.
+        """
         z = np.asarray(z, dtype=np.float64)
         valid_z = np.isfinite(z)
         first = valid_z & ~self._inited
@@ -162,6 +236,8 @@ class KalmanCV:
         return self._x[0].copy()
 
     def reset(self) -> None:
+        """Drop all state (positions, covariance, init flags); the next
+        update restarts from the first-sighting initialization."""
         self._x = np.zeros((2, self.dim))
         self._p = np.full((2, 2, self.dim), 1e2 * np.eye(2)[..., None])
         self._inited = np.zeros(self.dim, dtype=bool)

@@ -111,6 +111,14 @@ def fit_palm_frame(positions: np.ndarray) -> np.ndarray:
     convention is identical between calibration and teleoperation sessions
     (a fitted normal re-chooses its hemisphere per session depending on the
     hand tilt, which flipped the index/middle lateral direction).
+
+    Args:
+        positions: (21, 3) camera-frame keypoints.
+
+    Returns:
+        (3, 3) rotation matrix whose rows are the (x, y, z) unit axes;
+        identity when the wrist/middle-MCP/thumb-CMC rays are degenerate
+        or non-finite.
     """
     points = np.asarray(positions, dtype=np.float64)
     wrist = points[0]
@@ -134,7 +142,14 @@ def fit_palm_frame(positions: np.ndarray) -> np.ndarray:
 
 
 def wrap_angle(angle: np.ndarray) -> np.ndarray:
-    """Wrap angles to ``[-pi, pi]`` elementwise."""
+    """Wrap angles to ``[-pi, pi]`` elementwise.
+
+    Args:
+        angle: angle array (rad).
+
+    Returns:
+        Same-shape array wrapped to the principal branch.
+    """
     angle = np.asarray(angle, dtype=np.float64)
     return np.arctan2(np.sin(angle), np.cos(angle))
 
@@ -147,6 +162,16 @@ def fit_palm_normal(positions: np.ndarray, epsilon: float = 1e-9,
     -- a hand re-entering the view at a tilted angle must NOT flip the
     normal, or every lateral angle changes sign and the fingers mirror);
     the very first frame falls back to the camera +z convention.
+
+    Args:
+        positions: (21, 3) camera-frame keypoints; rows with NaN are
+            skipped.
+        epsilon: degenerate point-cloud norm guard.
+        reference: previous normal (3,) used for hemisphere continuity.
+
+    Returns:
+        (3,) unit normal; ``reference`` (or +z) when fewer than 3 valid
+        points remain.
     """
     points = np.asarray(positions, dtype=np.float64)[list(PALM_FIT_INDICES)]
     points = points[np.isfinite(points).all(axis=1)]
@@ -170,7 +195,17 @@ def fit_palm_normal(positions: np.ndarray, epsilon: float = 1e-9,
 
 
 def _signed_angle(first: np.ndarray, second: np.ndarray, axis: np.ndarray) -> float:
-    """Signed angle from ``first`` to ``second`` about ``axis``; 0 when degenerate."""
+    """Signed angle (rad) from ``first`` to ``second`` about ``axis``; 0 when degenerate.
+
+    Args:
+        first: first vector (3,).
+        second: second vector (3,).
+        axis: rotation axis (3,).
+
+    Returns:
+        Signed angle in radians in (-pi, pi]; 0.0 when any input vector is
+        degenerate.
+    """
     first_norm = float(np.linalg.norm(first))
     second_norm = float(np.linalg.norm(second))
     axis_norm = float(np.linalg.norm(axis))
@@ -184,14 +219,25 @@ def _signed_angle(first: np.ndarray, second: np.ndarray, axis: np.ndarray) -> fl
 def _derotation_angle(
     reference_in_plane: np.ndarray, current_vector: np.ndarray, normal: np.ndarray
 ) -> float:
-    """Lateral angle after de-rotating the phalanx back into the palm plane.
+    """Lateral angle (rad) after de-rotating the phalanx back into the palm plane.
 
     Decompose ``current_vector`` in the orthonormal frame ``{r, axis, n}``
     where ``r`` is the in-plane reference direction, ``n`` the palm normal,
     and ``axis = n x r`` the flexion axis.  Flexion rotates the phalanx in
     the ``r-n`` plane and leaves the ``axis`` component untouched, so the
     true lateral is ``atan2(dot(cur, axis), hypot(dot(cur, r), dot(cur, n)))``
-    -- exact for a rigid phalanx under flexion.
+    -- exact for a rigid phalanx under flexion (unlike orthogonal
+    projection, which shrinks and destabilizes near a 90-degree fist).
+
+    Args:
+        reference_in_plane: palm-plane reference direction (3,) from which
+            the lateral angle is measured.
+        current_vector: proximal phalanx direction (3,), possibly flexed
+            out of the palm plane.
+        normal: palm plane normal (3,).
+
+    Returns:
+        Lateral angle in radians; 0.0 on degenerate input.
     """
     ref_norm = float(np.linalg.norm(reference_in_plane))
     if ref_norm < 1e-9:
@@ -223,6 +269,26 @@ class LateralEstimator:
         collect_frames: int = 60,
         calibration_path: str | Path = DEFAULT_CALIBRATION_PATH,
     ) -> None:
+        """Create the lateral estimator.
+
+        Args:
+            calibration: explicit per-finger linear calibration; defaults
+                to the reference-workspace population values.
+            filter_alpha: one-pole smoothing weight for the output (the
+                effective weight is ``filter_alpha * confidence``, so
+                unobservable frames freeze the output).
+            confidence_low: gate start (below it the output freezes).
+            confidence_high: gate saturation (full smoothing above it).
+            method: "derotation" (default, exact under flexion) or
+                "projection" (legacy).
+            auto_calibrate: learn the user's neutral offsets from
+                ``collect_frames`` high-confidence frames at startup
+                (output stays neutral while collecting), persist them to
+                ``calibration_path`` and skip the collection next time.
+            collect_frames: frame budget for the auto-calibration.
+            calibration_path: JSON file for the auto-calibration
+                persistence.
+        """
         if method not in ("projection", "derotation"):
             raise ValueError("method must be 'projection' or 'derotation'.")
         if not 0.0 <= filter_alpha <= 1.0:
@@ -269,6 +335,15 @@ class LateralEstimator:
 
     @classmethod
     def from_config(cls, config: dict) -> "LateralEstimator":
+        """Build the estimator from a reference-workspace-style config dict.
+
+        Args:
+            config: dict with ``offsets_deg``/``gains``/``limits_deg``
+                under a "calibration" key plus the scalar filter settings.
+
+        Returns:
+            A :class:`LateralEstimator` with an explicit calibration.
+        """
         return cls(
             LateralCalibration.from_config(config),
             filter_alpha=float(config.get("filter_alpha", DEFAULT_FILTER_ALPHA)),
@@ -278,12 +353,23 @@ class LateralEstimator:
         )
 
     def reset(self) -> None:
+        """Drop all state: the smoothed output, the palm-normal continuity
+        reference, and the auto-calibration frame buffer."""
         self._value = None
         self._last_normal = None
         self._raw_buffer.clear()
 
     def measure(self, keypoints3d: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Return raw lateral angles (rad), confidence, and the palm normal."""
+        """Measure raw lateral angles (rad), confidence, and the palm normal.
+
+        Args:
+            keypoints3d: (21, 3) camera-frame keypoints.
+
+        Returns:
+            (raw (4,) rad per finger, confidence (4,) in [0, 1] = the
+            in-plane fraction of each proximal phalanx, palm normal (3,)).
+            Missing keypoints yield 0 angle / 0 confidence entries.
+        """
         positions = np.asarray(keypoints3d, dtype=np.float64)
         if positions.shape != (21, 3):
             raise ValueError(f"Expected keypoints shape (21, 3), got {positions.shape}.")
@@ -319,7 +405,19 @@ class LateralEstimator:
         return angles, confidence, normal
 
     def update(self, keypoints3d: np.ndarray) -> tuple[np.ndarray, dict]:
-        """Return four calibrated, smoothed, clamped robot joint_2 values (rad)."""
+        """Return four calibrated, smoothed, clamped robot joint_2 values (rad).
+
+        Args:
+            keypoints3d: (21, 3) camera-frame keypoints of this frame.
+
+        Returns:
+            (qpos (4,) rad, diagnostics dict) with raw/target/smoothed
+            lateral values, confidence, the palm normal, and the
+            auto-calibration status.  When nothing is observable (or the
+            auto-calibration is still collecting) the output is neutral
+            zeros; otherwise it is the confidence-gated one-pole smoothed,
+            per-finger-limit-clamped calibration output.
+        """
         raw, confidence, normal = self.measure(keypoints3d)
 
         if self._auto_calibrate:
@@ -387,6 +485,12 @@ class LateralEstimator:
 
 
     def _load_calibration(self) -> LateralCalibration | None:
+        """Read a saved auto-calibration JSON; None when absent/corrupt.
+
+        Returns:
+            :class:`LateralCalibration` from ``self._calibration_path``,
+            or None on any read/parse error.
+        """
         try:
             data = json.loads(self._calibration_path.read_text(encoding="utf-8"))
             return LateralCalibration.from_config(data)
@@ -394,6 +498,8 @@ class LateralEstimator:
             return None
 
     def _save_calibration(self) -> None:
+        """Persist the auto-calibrated offsets/gains/limits to JSON
+        (``self._calibration_path``); failures only print a warning."""
         try:
             self._calibration_path.parent.mkdir(parents=True, exist_ok=True)
             self._calibration_path.write_text(
@@ -426,6 +532,24 @@ def calibrate_lateral(
     of ``angle - offset`` to ``target_half_range_deg`` so natural abduction
     stays inside the robot joint_2 range.  High-confidence frames only:
     during a deep fist the in-plane projection is tiny and unstable.
+
+    Args:
+        keypoints_list: sequence of (21, 3) camera-frame keypoint frames
+            covering the user's spread range.
+        method: "derotation" (default) or "projection" measurement.
+        open_quantile: fraction of the most-open frames used for the
+            neutral offset (default 0.2).
+        target_half_range_deg: half the robot lateral range that the
+            observed spread is mapped onto (default 12 deg).
+        min_gain: lower gain clip (default 0.2).
+        max_gain: upper gain clip (default 1.0).
+
+    Returns:
+        :class:`LateralCalibration` with the fitted offsets/gains and the
+        default per-finger limits.
+
+    Raises:
+        ValueError: when ``keypoints_list`` is empty.
     """
     from p24grasp.teleop.angles import angles_from_keypoints  # noqa: E402
     from p24grasp.teleop.detector import HandDetection  # noqa: E402
