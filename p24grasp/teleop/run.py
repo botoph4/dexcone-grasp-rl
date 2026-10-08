@@ -38,9 +38,13 @@ def _auto_detect_source(width: int, height: int, fps: int,
         order.insert(0, cached)
     errors = []
     for kind in order:
-        if not probes[kind]():
+        present = probes[kind]()
+        if present is False:
             errors.append(f"{kind}: no device on the bus")
             continue
+        # True (device present) or None (probe inconclusive): attempt the
+        # full start -- when it fails, its error carries the real cause
+        # (e.g. the sudo hint for the Orbbec UVC permission)
         source = make_camera_source(kind, width, height, fps,
                                     frame_sync=frame_sync, align=align)
         try:

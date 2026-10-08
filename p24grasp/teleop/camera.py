@@ -82,27 +82,42 @@ def _save_backend_cache(kind: str, path: str | Path = BACKEND_CACHE_PATH) -> Non
         pass
 
 
-def probe_realsense_present() -> bool:
+def probe_realsense_present() -> bool | None:
     """Fast RealSense presence check: query the SDK context without
     starting any stream (pipeline start on an absent device takes
-    seconds, this is ~instant)."""
+    seconds, this is ~instant).
+
+    Returns:
+        True when a device is enumerated, False when the bus is
+        definitely empty, None when the SDK cannot check (missing
+        library) -- callers then fall back to the full start so the real
+        error surfaces.
+    """
     try:
         import pyrealsense2 as rs  # noqa: E402
 
         return len(rs.context().query_devices()) > 0
-    except Exception:  # SDK missing / no device: pylint: disable=broad-exception-caught
-        return False
+    except Exception:  # SDK missing: pylint: disable=broad-exception-caught
+        return None
 
 
-def probe_orbbec_present() -> bool:
+def probe_orbbec_present() -> bool | None:
     """Fast Orbbec presence check: query the device list without starting
-    any stream."""
+    any stream.  Device enumeration works without root; only opening the
+    UVC streams requires sudo on macOS.
+
+    Returns:
+        True when a device is enumerated, False when the bus is
+        definitely empty, None when the SDK cannot check (missing
+        library) -- callers then fall back to the full start so the real
+        error surfaces.
+    """
     try:
         import pyorbbecsdk as ob  # noqa: E402
 
-        return ob.Pipeline.get_device_list().get_count() > 0
-    except Exception:  # SDK missing / no device / no UVC permission
-        return False
+        return ob.Context().query_devices().get_count() > 0
+    except Exception:  # SDK missing: pylint: disable=broad-exception-caught
+        return None
 
 
 class RealsenseSource:
