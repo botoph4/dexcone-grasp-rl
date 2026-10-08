@@ -328,8 +328,10 @@ class HybridRetargeter(_TipSpaceRetargeter):
              + w_reg * ||q - q0||
         s.t.   URDF joint limits, warm-started from the previous frame.
 
-    When the keypoints lack depth, the retarget degrades gracefully to the
-    pure joint mapping (``retarget`` returns the scaling command).
+    When the keypoints lack depth (occlusion / hand out of view), the
+    retargeter HOLDs the last optimized command -- falling back to the pure
+    joint mapping would jump, because the optimizer's solution differs from
+    q0 (the thumb carries no prior).
     """
 
     def __init__(self, scale: float | None = None, tip_weight: float = 0.5,
@@ -504,8 +506,13 @@ class HybridRetargeter(_TipSpaceRetargeter):
                 q0[start + 1] = 0.0
         targets = self.targets_from_keypoints(keypoints3d)
         if targets is None:
-            # depth loss: fall back to the joint mapping (graceful)
-            self._q20_prev = self._to_urdf_degrees(q0)
+            # keypoints lost (hand out of view / depth lifting failed): HOLD
+            # the last optimized command.  Do NOT fall back to the joint
+            # mapping q0 -- the optimizer's solution and q0 differ (the
+            # thumb has no prior, so its opposition/CMC are tip-driven), and
+            # switching between the two is exactly the angle jump seen when
+            # the hand leaves the view.  solve() warm-starts from this held
+            # pose, so re-entry continues smoothly.
             return self._q20_prev.copy()
         pip_targets = self.pip_targets_from_keypoints(keypoints3d)
         q20 = self.solve(targets, q0, pip_targets)

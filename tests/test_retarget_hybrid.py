@@ -60,13 +60,15 @@ def _straight_keypoints(reach: float = 0.16) -> np.ndarray:
     return kp
 
 
-def test_missing_keypoints_falls_back_to_joint_mapping():
+def test_missing_keypoints_holds_the_last_command():
     ret = _retargeter()
     angles = _angles(flexion=60.0)
-    q20 = ret.retarget(angles, keypoints3d=np.full((21, 3), np.nan))
-    # equals the scaling output (16 DOFs -> URDF order with DIP=PIP)
-    expected = ret._to_urdf_degrees(scaling_q16(ret.hand, angles))  # pylint: disable=protected-access
-    np.testing.assert_allclose(q20, expected, atol=1e-9)
+    q_tracked = ret.retarget(angles, keypoints3d=_straight_keypoints())
+    # hand leaves the view: the command must HOLD, not switch to the joint
+    # mapping (the optimizer's solution and q0 differ -- the thumb has no
+    # prior -- so the old fallback jumped the angles on every hand removal)
+    q_lost = ret.retarget(angles, keypoints3d=np.full((21, 3), np.nan))
+    np.testing.assert_allclose(q_lost, q_tracked, atol=1e-12)
 
 
 def test_output_respects_limits_and_mimic():
