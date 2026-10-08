@@ -6,16 +6,19 @@ States:
               visibility-weighted EMA + DIP~=0.7*PIP kinematic fixup (soft hold
               per hidden DOF)
     HOLD      presence < t_lo for N_enter frames: CV-Kalman predict-only
-              extrapolation (hold_fast s), then slow relaxation toward the rest
-              pose; after hold_max s -> LOST
-    LOST      command rest pose; needs N_exit consecutive good frames to recover
+              extrapolation (hold_fast s), then FREEZE at the last pose --
+              relaxing toward the rest pose made every hand removal look like
+              the mapping restarted on re-entry, so the absence is held
+              instead; after hold_max s -> LOST (status downgrade only)
+    LOST      keeps holding the frozen pose; needs N_exit consecutive good
+              frames to recover
     RECOVERY  (transient, first TRACKING frame after HOLD/LOST) slew-limited
               catch-up or exponential blend -- filters are NOT reset (resets
               cause the post-occlusion jump this machine exists to prevent)
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 
 import numpy as np
@@ -46,8 +49,7 @@ class OcclusionParams:
     n_enter: int = 3  # consecutive hard-bad frames to enter HOLD
     n_exit: int = 5  # consecutive good frames to leave HOLD/LOST
     hold_fast: float = 0.5  # s of KF extrapolation
-    hold_max: float = 3.0  # s after which we give up -> LOST
-    relax_tau: float = 1.0  # relaxation time constant (<= ~30 deg/s)
+    hold_max: float = 3.0  # s after which HOLD is reported as LOST
     slew_max: float = 300.0  # deg/s recovery catch-up limit
     blend_tau: float = 0.1  # s recovery exponential blend
     min_vis: float = 0.5  # per-DOF visibility threshold
@@ -61,7 +63,6 @@ class OcclusionParams:
     kf_r_var: float = 2.25
     kf_sigma_accel: float = 60.0
     dip_coupling_k: float = 0.7
-    rest_pose: HandAngles = field(default_factory=HandAngles.zeros)
 
 
 @dataclass
@@ -183,20 +184,20 @@ class OcclusionStateMachine:
             self._t_hold += dt
             if self._t_hold <= p.hold_fast:
                 out = self._unflatten(self._kf.predict(dt), angles)
-            elif self._t_hold <= p.hold_max:
-                # Relax toward rest pose (bounded by ~30 deg/s via tau=1 s).
-                blend = 1.0 - np.exp(-dt / p.relax_tau)
-                rest = self._flatten(p.rest_pose)
-                out = self._unflatten(self._flatten(self._prev) +
-                                      blend * (rest - self._flatten(self._prev)),
-                                      angles)
             else:
-                self.state = State.LOST
-                out = self._slew_limit(self._prev, p.rest_pose, dt)
+                # freeze at the last commanded pose: a hand leaving the view
+                # must not reset the mapping (the old relaxation toward the
+                # rest pose made every re-entry look like a fresh start);
+                # _recover() re-syncs smoothly when the hand comes back
+                if self._t_hold > p.hold_max:
+                    self.state = State.LOST
+                out = self._unflatten(self._flatten(self._prev), angles)
             return out
-        # LOST: command the rest pose (rate-limited); recovery is handled by
-        # the counters in update().
-        return self._slew_limit(self._prev, p.rest_pose, dt)
+        # LOST: keep holding the frozen pose (never command the rest pose --
+        # re-opening the hand on every absence is exactly the "mapping
+        # restarts" behaviour); recovery is handled by the counters in
+        # update().
+        return self._unflatten(self._flatten(self._prev), angles)
 
     def _recover(self, angles: HandAngles, dt: float) -> HandAngles:
         """First TRACKING frame after HOLD/LOST: smooth re-entry, no filter reset."""

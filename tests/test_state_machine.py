@@ -46,7 +46,7 @@ def test_enters_hold_after_n_bad_frames():
     assert out.state == State.HOLD
 
 
-def test_hold_extrapolates_then_relaxes_to_rest():
+def test_hold_extrapolates_then_freezes():
     sm = OcclusionStateMachine()
     _warm(sm, flexion=60.0)
     for _ in range(OcclusionParams().n_enter):
@@ -54,11 +54,14 @@ def test_hold_extrapolates_then_relaxes_to_rest():
     # early hold: extrapolation keeps the commanded angle near 60
     early = sm.update(_angles(presence=0.0, flexion=60.0), DT)
     assert early.angles.flexion[0, 0] > 50.0
-    # late hold: relaxed toward the rest pose (0), monotonically, no overshoot
+    # late hold: FROZEN at the last pose -- a hand leaving the view must not
+    # reset the mapping, so there is no relaxation toward rest (0)
     late = early
     for _ in range(60):  # 1 s at 60 fps
         late = sm.update(_angles(presence=0.0, flexion=60.0), DT)
-    assert 0.0 <= late.angles.flexion[0, 0] < 40.0
+    assert late.angles.flexion[0, 0] > 50.0
+    again = sm.update(_angles(presence=0.0, flexion=60.0), DT)
+    assert again.angles.flexion[0, 0] == late.angles.flexion[0, 0]
 
 
 def test_recovery_has_no_jump():
@@ -76,7 +79,7 @@ def test_recovery_has_no_jump():
     assert step <= 5.0 + 1e-6
 
 
-def test_lost_commands_rest_pose():
+def test_lost_holds_the_last_pose():
     sm = OcclusionStateMachine()
     _warm(sm, flexion=60.0)
     for _ in range(OcclusionParams().n_enter):
@@ -86,7 +89,9 @@ def test_lost_commands_rest_pose():
         out = sm.update(_angles(presence=0.0, flexion=60.0), DT)
     assert out.state == State.LOST
     assert not out.tracking_ok
-    np.testing.assert_allclose(out.angles.flexion, 0.0)
+    # the pose is held, not commanded back to rest: re-opening the hand on
+    # every absence makes the mapping look like it restarts on re-entry
+    np.testing.assert_allclose(out.angles.flexion, 60.0, atol=2.0)
 
 
 def test_degraded_partial_visibility_holds_hidden_dof():
