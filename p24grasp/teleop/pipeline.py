@@ -16,6 +16,15 @@ from p24grasp.teleop.state_machine import (
     State,
 )
 
+# Max commanded joint speed (deg/s) applied to the retargeter's output.
+# The state machine already rate-limits the filtered human angles, but the
+# retargeter solves against live fingertip targets, so its output can jump
+# when the hand (re-)enters the view even while the angles are held --
+# without this bound the robot hand snaps to the new pose like a cold
+# start instead of transitioning from the held pose.  Matches the state
+# machine's slew budget (docs: 假肢安全上限).
+COMMAND_SLEW_DEG_S = 300.0
+
 
 @dataclass
 class TeleopFrame:
@@ -39,7 +48,8 @@ class TeleopPipeline:
 
     def __init__(self, source: FrameSource, detector: HandDetector,
                  state_machine: OcclusionStateMachine | None = None,
-                 retargeter: Retargeter | None = None):
+                 retargeter: Retargeter | None = None,
+                 command_slew_deg_s: float = COMMAND_SLEW_DEG_S):
         """Wire the perception->mapping chain.
 
         Args:
@@ -49,6 +59,10 @@ class TeleopPipeline:
                 one with default :class:`OcclusionParams`).
             retargeter: optional backend (default:
                 :class:`HybridRetargeter`).
+            command_slew_deg_s: max per-joint command speed (deg/s); the
+                command starts from the neutral pose and is rate-limited
+                every frame, so a re-entering hand transitions smoothly
+                from the held pose instead of snapping like a cold start.
         """
         self.source = source
         self.detector = detector
@@ -58,7 +72,10 @@ class TeleopPipeline:
 
             retargeter = HybridRetargeter()
         self.retargeter = retargeter
+        self.command_slew_deg_s = float(command_slew_deg_s)
         self._last_ts: float | None = None
+        # command history for the rate limit: starts at the neutral pose
+        self._last_command = np.zeros(20)
         self.last_output: TeleopFrame | None = None
 
     def step(self) -> TeleopFrame:
@@ -77,10 +94,33 @@ class TeleopPipeline:
         raw = angles_from_keypoints(detection)
         filtered = self.state_machine.update(raw, dt)
         command = self.retargeter.retarget(filtered.angles, detection.keypoints3d)
+        command = self._slew_limit_command(command, dt)
+        self._last_command = command.copy()
         out = TeleopFrame(frame=frame, detection=detection, raw_angles=raw,
                           filtered=filtered, command=command, dt=dt)
         self.last_output = out
         return out
+
+    def _slew_limit_command(self, command: np.ndarray, dt: float) -> np.ndarray:
+        """Rate-limit the 20-joint command toward the retargeter's output.
+
+        The retargeter solves against live fingertip targets, so its output
+        can change instantly when the hand (re-)enters the view even though
+        the filtered angles are held -- without this bound the robot hand
+        snaps to the new pose as if the hand had just entered for the first
+        time, instead of transitioning smoothly from the held pose.
+
+        Args:
+            command: the retargeter's (20,) output in degrees.
+            dt: seconds since the previous frame.
+
+        Returns:
+            ``command`` moved toward the previous command by at most
+            ``command_slew_deg_s * dt`` degrees per joint.
+        """
+        max_step = self.command_slew_deg_s * dt
+        return np.clip(command - self._last_command, -max_step, max_step) \
+            + self._last_command
 
     def _dt(self, frame: Frame | None) -> float:
         """Seconds since the previous frame (timestamp-based, frame-rate
