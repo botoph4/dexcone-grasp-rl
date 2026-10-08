@@ -194,12 +194,21 @@ class _TipSpaceRetargeter:
 
         Returns:
             (5, 3) fingertip targets in the robot palm frame (chain order),
-            or None when the wrist or any fingertip is non-finite.  While
-            the thumb tip covers the index MCP, the index target holds its
-            last value (the keypoints then belong to the thumb).
+            or None when the wrist, any fingertip, or a palm-frame input
+            (middle MCP / thumb CMC) is non-finite -- a missing frame input
+            would fit a garbage palm frame, so the caller holds instead.
+            While the thumb tip covers the index MCP, the index target
+            holds its last value (the keypoints then belong to the thumb).
         """
-        needed = [self.WRIST_ID, *[self.TIP_IDS[name] for name in self._chain_names]]
+        # frame inputs are as critical as the tips: without them the palm
+        # frame fit is garbage and the targets would twist the robot hand
+        needed = [self.WRIST_ID, 9, 1,
+                  *[self.TIP_IDS[name] for name in self._chain_names]]
         if keypoints3d is None or not np.isfinite(keypoints3d[needed]).all():
+            # a stale hold must not cross an absence: drop both target
+            # memories so the next detection starts with fresh targets
+            self._last_targets = None
+            self._last_pip_targets = None
             return None
         frame = self._palm_frame_from_keypoints(keypoints3d)
         wrist = keypoints3d[self.WRIST_ID]
@@ -221,13 +230,16 @@ class _TipSpaceRetargeter:
 
         Returns:
             (5, 3) PIP-joint targets in the robot palm frame (chain
-            order), or None when the wrist or any PIP keypoint is
-            non-finite; the index PIP holds its last value while the
-            thumb covers it.
+            order), or None when the wrist, any PIP keypoint, or a
+            palm-frame input (middle MCP / thumb CMC) is non-finite; the
+            index PIP holds its last value while the thumb covers it.
         """
         pip_ids = {"thumb": 3, "index": 6, "middle": 10, "ring": 14, "little": 18}
-        needed = [self.WRIST_ID, *[pip_ids[name] for name in self._chain_names]]
+        needed = [self.WRIST_ID, 9, 1, *[pip_ids[name] for name in self._chain_names]]
         if keypoints3d is None or not np.isfinite(keypoints3d[needed]).all():
+            # drop the memory across an absence (see targets_from_keypoints)
+            self._last_targets = None
+            self._last_pip_targets = None
             return None
         frame = self._palm_frame_from_keypoints(keypoints3d)
         wrist = keypoints3d[self.WRIST_ID]
@@ -289,12 +301,20 @@ class _TipSpaceRetargeter:
         if self._palm_frame is None:
             self._palm_frame = frame
         else:
-            self._palm_frame = 0.8 * self._palm_frame + 0.2 * frame
-            # re-orthonormalize via polar decomposition
-            u, _, vt = np.linalg.svd(self._palm_frame)
-            self._palm_frame = u @ vt
-            if np.linalg.det(self._palm_frame) < 0:
-                self._palm_frame[-1] *= -1
+            # a large orientation change (hand re-entered rotated) snaps
+            # instead of blending: the 0.8/0.2 mix would compute targets in
+            # a transitional frame for ~10 frames and twist the robot hand
+            rel_angle = float(np.degrees(np.arccos(np.clip(
+                (np.trace(frame @ self._palm_frame.T) - 1.0) / 2.0, -1.0, 1.0))))
+            if rel_angle > 45.0:
+                self._palm_frame = frame
+            else:
+                self._palm_frame = 0.8 * self._palm_frame + 0.2 * frame
+                # re-orthonormalize via polar decomposition
+                u, _, vt = np.linalg.svd(self._palm_frame)
+                self._palm_frame = u @ vt
+                if np.linalg.det(self._palm_frame) < 0:
+                    self._palm_frame[-1] *= -1
         return self._palm_frame
 
     mount_t = np.zeros(3)

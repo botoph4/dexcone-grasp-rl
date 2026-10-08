@@ -174,3 +174,38 @@ def test_lateral_disabled_holds_j2_at_neutral():
         q20 = ret.retarget(_angles(flexion=40.0),
                            keypoints3d=_straight_keypoints())
     np.testing.assert_allclose(q20[[5, 9, 13, 17]], 0.0, atol=1e-9)
+
+
+def test_absence_invalidates_stale_target_holds():
+    ret = _retargeter()
+    kp = _straight_keypoints()
+    kp[4] = kp[5] + (0.005, 0.0, 0.0)  # thumb tip covers the index MCP
+    ret.retarget(_angles(flexion=40.0), keypoints3d=kp)
+    assert ret._last_targets is not None  # pylint: disable=protected-access
+    assert ret._last_pip_targets is not None  # pylint: disable=protected-access
+    # hand leaves the view: the hold memory must be dropped, or the next
+    # detection would keep pulling the index toward the stale pre-absence
+    # point and twist the mapping
+    ret.retarget(_angles(flexion=40.0), keypoints3d=np.full((21, 3), np.nan))
+    assert ret._last_targets is None  # pylint: disable=protected-access
+    assert ret._last_pip_targets is None  # pylint: disable=protected-access
+
+
+def test_palm_frame_snaps_on_large_reorientation():
+    # re-entering rotated ~90 deg must snap the palm frame instead of
+    # blending it over ~10 frames (the transitional frame twists the
+    # mapped pose)
+    ret = _retargeter()
+    ret.retarget(_angles(flexion=0.0), keypoints3d=_straight_keypoints())
+    old = ret._palm_frame.copy()  # pylint: disable=protected-access
+    kp = _straight_keypoints()
+    a = np.radians(90.0)
+    rot = np.array([[np.cos(a), -np.sin(a), 0.0],
+                    [np.sin(a), np.cos(a), 0.0],
+                    [0.0, 0.0, 1.0]])
+    kp = (rot @ (kp - kp[0]).T).T + kp[0]
+    ret.retarget(_angles(flexion=0.0), keypoints3d=kp)
+    new = ret._palm_frame  # pylint: disable=protected-access
+    angle = np.degrees(np.arccos(np.clip(
+        (np.trace(new @ old.T) - 1.0) / 2.0, -1.0, 1.0)))
+    assert abs(angle - 90.0) < 5.0

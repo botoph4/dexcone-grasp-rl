@@ -94,6 +94,47 @@ def test_lost_holds_the_last_pose():
     np.testing.assert_allclose(out.angles.flexion, 60.0, atol=2.0)
 
 
+def test_recovery_does_not_require_full_dof_visibility():
+    # a re-entering pinch hides ~half the DOFs (the thumb covers the
+    # index/middle bases), so the exit must count presence-only frames --
+    # the full-visibility rule would leave the machine stuck in HOLD forever
+    sm = OcclusionStateMachine()
+    _warm(sm, flexion=60.0)
+    for _ in range(OcclusionParams().n_enter + 200):  # into LOST
+        sm.update(_angles(presence=0.0, flexion=60.0), DT)
+    assert sm.state == State.LOST
+    after = None
+    for _ in range(OcclusionParams().n_exit):
+        angles = _angles(presence=1.0, flexion=60.0)
+        angles.flexion_vis[:] = 0.3  # pinch-like: every DOF below min_vis
+        angles.abduction_vis[:] = 0.3
+        after = sm.update(angles, DT)
+    assert after.state != State.LOST
+
+
+def test_hold_freezes_immediately_without_kf_history():
+    # tracking that never reached TRACKING (pinch-like: the index/middle
+    # DOFs hidden) leaves the Kalman filter uninitialized; a predict-only
+    # hold would then extrapolate ZEROS for every DOF and wipe the pose.
+    # The freeze must kick in at once and keep the tracked DOFs.
+    sm = OcclusionStateMachine()
+    for _ in range(90):
+        angles = _angles(presence=1.0, flexion=60.0)
+        angles.flexion_vis[1:3] = 0.3  # index+middle hidden: dof_frac < 0.6
+        angles.abduction_vis[:] = 0.3
+        sm.update(angles, DT)
+    assert sm.state == State.DEGRADED
+    assert not sm._kf.has_state  # pylint: disable=protected-access
+    assert sm._prev.flexion[0, 0] > 50.0  # thumb tracked fine
+    for _ in range(OcclusionParams().n_enter):
+        sm.update(_angles(presence=0.0, flexion=60.0), DT)
+    out = None
+    for _ in range(40):  # past hold_fast (0.5 s)
+        out = sm.update(_angles(presence=0.0, flexion=60.0), DT)
+    assert out.state == State.HOLD
+    assert out.angles.flexion[0, 0] > 50.0
+
+
 def test_degraded_partial_visibility_holds_hidden_dof():
     sm = OcclusionStateMachine()
     _warm(sm, flexion=30.0)

@@ -6,12 +6,15 @@ States:
               visibility-weighted EMA + DIP~=0.7*PIP kinematic fixup (soft hold
               per hidden DOF)
     HOLD      presence < t_lo for N_enter frames: CV-Kalman predict-only
-              extrapolation (hold_fast s), then FREEZE at the last pose --
-              relaxing toward the rest pose made every hand removal look like
-              the mapping restarted on re-entry, so the absence is held
+              extrapolation (hold_fast s, only when the KF has absorbed
+              measurements), then FREEZE at the last pose -- relaxing
+              toward the rest pose made every hand removal look like the
+              mapping restarted on re-entry, so the absence is held
               instead; after hold_max s -> LOST (status downgrade only)
-    LOST      keeps holding the frozen pose; needs N_exit consecutive good
-              frames to recover
+    LOST      keeps holding the frozen pose; needs N_exit consecutive
+              presence-good frames to recover (a re-entering pinch hides
+              ~half the DOFs, so the exit must NOT require full DOF
+              visibility)
     RECOVERY  (transient, first TRACKING frame after HOLD/LOST) slew-limited
               catch-up or exponential blend -- filters are NOT reset (resets
               cause the post-occlusion jump this machine exists to prevent)
@@ -47,7 +50,7 @@ class OcclusionParams:
     t_hi: float = 0.7  # presence hysteresis: enter/exit HOLD asymmetric
     t_lo: float = 0.5
     n_enter: int = 3  # consecutive hard-bad frames to enter HOLD
-    n_exit: int = 5  # consecutive good frames to leave HOLD/LOST
+    n_exit: int = 5  # consecutive presence-good frames to leave HOLD/LOST
     hold_fast: float = 0.5  # s of KF extrapolation
     hold_max: float = 3.0  # s after which HOLD is reported as LOST
     slew_max: float = 300.0  # deg/s recovery catch-up limit
@@ -185,6 +188,15 @@ class OcclusionStateMachine:
         elif hard_bad:
             self._bad += 1
             self._good = 0
+        elif self.state in (State.HOLD, State.LOST) and angles.presence >= p.t_hi:
+            # Exit-lenient: a re-entering pinch naturally hides ~half the
+            # DOFs (the thumb covers the index/middle bases and the
+            # visibility rule damps them), so the full dof_frac condition
+            # can never fire and the machine would stay stuck in HOLD
+            # forever.  Presence-only frames count toward the exit; the
+            # per-DOF holds cover the hidden joints.
+            self._good += 1
+            self._bad = 0
         else:  # degraded zone: neither full nor lost
             self._good = 0
 
@@ -243,13 +255,16 @@ class OcclusionStateMachine:
             return self._slew_limit(self._prev, out, dt)
         if self.state == State.HOLD:
             self._t_hold += dt
-            if self._t_hold <= p.hold_fast:
+            if self._t_hold <= p.hold_fast and self._kf.has_state:
                 out = self._unflatten(self._kf.predict(dt), angles)
             else:
                 # freeze at the last commanded pose: a hand leaving the view
                 # must not reset the mapping (the old relaxation toward the
                 # rest pose made every re-entry look like a fresh start);
-                # _recover() re-syncs smoothly when the hand comes back
+                # _recover() re-syncs smoothly when the hand comes back.
+                # The KF branch is skipped when it never absorbed a
+                # measurement (tracking was only ever DEGRADED): predict()
+                # would extrapolate uninitialized zeros and wipe the hold.
                 if self._t_hold > p.hold_max:
                     self.state = State.LOST
                 out = self._unflatten(self._flatten(self._prev), angles)

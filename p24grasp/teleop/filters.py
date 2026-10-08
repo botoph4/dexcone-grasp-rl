@@ -235,6 +235,16 @@ class KalmanCV:
             self._p -= gain[:, None, :] * self._p[0:1, :, :] * accept[None, None, :]
         return self._x[0].copy()
 
+    @property
+    def has_state(self) -> bool:
+        """Whether at least one DOF has absorbed a measurement.
+
+        Predict-only extrapolation from a never-initialized filter returns
+        zeros, which would silently drive an occlusion hold to the rest
+        pose -- callers use this to fall back to freezing instead.
+        """
+        return bool(self._inited.any())
+
     def reset(self) -> None:
         """Drop all state (positions, covariance, init flags); the next
         update restarts from the first-sighting initialization."""
