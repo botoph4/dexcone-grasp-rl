@@ -62,3 +62,14 @@ def test_replay_loop_restarts(tmp_path):
     replay = ReplaySource(tmp_path, loop=True)
     for _ in range(5):
         assert replay.read() is not None  # 1-frame loop never exhausts
+
+
+def test_backend_cache_roundtrip(tmp_path):
+    from p24grasp.teleop.camera import _load_backend_cache, _save_backend_cache
+
+    path = tmp_path / "camera_backend.txt"
+    assert _load_backend_cache(path) is None  # absent
+    _save_backend_cache("orbbec", path)
+    assert _load_backend_cache(path) == "orbbec"
+    path.write_text("garbage", encoding="utf-8")
+    assert _load_backend_cache(path) is None  # corrupt

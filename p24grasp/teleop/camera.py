@@ -50,6 +50,61 @@ class FrameSource(Protocol):
         ...
 
 
+BACKEND_CACHE_PATH = Path.home() / ".cache" / "p24grasp" / "camera_backend.txt"
+
+
+def _load_backend_cache(path: str | Path = BACKEND_CACHE_PATH) -> str | None:
+    """Read the last successfully started camera backend, if any.
+
+    Args:
+        path: cache file (default: ~/.cache/p24grasp/camera_backend.txt).
+
+    Returns:
+        "realsense"/"orbbec" from a previous successful auto-detect, or
+        None when the file is absent or corrupt.
+    """
+    try:
+        kind = Path(path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return kind if kind in ("realsense", "orbbec") else None
+
+
+def _save_backend_cache(kind: str, path: str | Path = BACKEND_CACHE_PATH) -> None:
+    """Remember the last successfully started backend so the next
+    auto-detect tries it first; failures are silent (the cache is only an
+    optimization)."""
+    try:
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(kind + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def probe_realsense_present() -> bool:
+    """Fast RealSense presence check: query the SDK context without
+    starting any stream (pipeline start on an absent device takes
+    seconds, this is ~instant)."""
+    try:
+        import pyrealsense2 as rs  # noqa: E402
+
+        return len(rs.context().query_devices()) > 0
+    except Exception:  # SDK missing / no device: pylint: disable=broad-exception-caught
+        return False
+
+
+def probe_orbbec_present() -> bool:
+    """Fast Orbbec presence check: query the device list without starting
+    any stream."""
+    try:
+        import pyorbbecsdk as ob  # noqa: E402
+
+        return ob.Pipeline.get_device_list().get_count() > 0
+    except Exception:  # SDK missing / no device / no UVC permission
+        return False
+
+
 class RealsenseSource:
     """Live RealSense D405: 640x480@60 RGB8 + Z16 depth, aligned to color.
 
@@ -70,6 +125,12 @@ class RealsenseSource:
         self._pipeline = None
         self._align = None
         self._depth_scale = 1.0
+        self._device_name = "unknown"
+
+    def describe(self) -> str:
+        """Human-readable device identification for the startup log
+        (populated once :meth:`start` succeeded)."""
+        return f"RealSense {self._device_name}"
 
     def start(self) -> None:
         """Open the camera: RGB8 + Z16 streams at the configured mode,
@@ -89,6 +150,10 @@ class RealsenseSource:
         self._depth_scale = device.first_depth_sensor().get_depth_scale()
         self._pipeline = pipeline
         self._align = rs.align(rs.stream.color)
+        try:
+            self._device_name = device.get_info(rs.camera_info.name)
+        except RuntimeError:  # info key unsupported on some firmwares
+            pass
 
     def _intrinsics(self, frame):
         """Color-stream intrinsics of an aligned frame.
@@ -171,6 +236,22 @@ class OrbbecSource:
         self._pipeline = None
         self._fx = self._fy = self._cx = self._cy = np.nan
         self._timeouts = 0
+        self._device_name = "unknown"
+
+    def describe(self) -> str:
+        """Human-readable device identification for the startup log
+        (populated once :meth:`start` succeeded)."""
+        return f"Orbbec {self._device_name}"
+
+    @staticmethod
+    def _read_device_name(pipeline) -> str:
+        """Device model name from the SDK (best effort)."""
+        try:
+            info = pipeline.get_device().get_device_info()
+            name = info.get_name() if info is not None else None
+            return str(name) if name else "unknown"
+        except Exception:  # pylint: disable=broad-exception-caught
+            return "unknown"
 
     def _build_config(self, pipeline):
         """Enable color+depth streams and D2C alignment; raises with a readable
@@ -224,6 +305,7 @@ class OrbbecSource:
         self._fx, self._fy = intrinsics.fx, intrinsics.fy
         self._cx, self._cy = intrinsics.cx, intrinsics.cy
         self._pipeline = pipeline
+        self._device_name = self._read_device_name(pipeline)
         self._warmup()
 
     def _warmup(self, budget_s: float = 15.0) -> None:

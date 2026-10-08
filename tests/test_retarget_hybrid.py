@@ -209,3 +209,29 @@ def test_palm_frame_snaps_on_large_reorientation():
     angle = np.degrees(np.arccos(np.clip(
         (np.trace(new @ old.T) - 1.0) / 2.0, -1.0, 1.0)))
     assert abs(angle - 90.0) < 5.0
+
+
+def test_scale_update_rejects_glitched_reach_spikes():
+    # a wrist depth-lifted onto the background inflates every tip vector
+    # uniformly; absorbing the spike into the monotonic reach max would
+    # clip the scale to its lower bound -- a persistent fist
+    ret = _retargeter()
+    ret._human_reach = 0.16  # pylint: disable=protected-access
+    rel = np.full((5, 3), 0.16 / np.sqrt(3.0))
+    scale = ret._update_scale(rel)  # pylint: disable=protected-access
+    assert scale > 1.0
+    glitched = rel * 2.5
+    ret._update_scale(glitched)  # pylint: disable=protected-access
+    assert ret._human_reach <= 0.16 * 1.0001  # pylint: disable=protected-access
+    # the mapping is still the open-hand scale, not the fist-clipped 0.8
+    assert ret._update_scale(rel) > 1.0  # pylint: disable=protected-access
+
+
+def test_glitched_wrist_depth_holds_targets():
+    ret = _retargeter()
+    kp = _straight_keypoints()
+    assert ret.targets_from_keypoints(kp) is not None
+    bad = kp.copy()
+    bad[0, 2] += 0.35  # wrist depth sampled the background behind the hand
+    assert ret.targets_from_keypoints(bad) is None
+    assert ret.pip_targets_from_keypoints(bad) is None

@@ -210,6 +210,10 @@ class _TipSpaceRetargeter:
             self._last_targets = None
             self._last_pip_targets = None
             return None
+        if not self._wrist_depth_sane(keypoints3d):
+            self._last_targets = None
+            self._last_pip_targets = None
+            return None
         frame = self._palm_frame_from_keypoints(keypoints3d)
         wrist = keypoints3d[self.WRIST_ID]
         rel = np.stack([keypoints3d[self.TIP_IDS[name]] - wrist
@@ -241,6 +245,10 @@ class _TipSpaceRetargeter:
             self._last_targets = None
             self._last_pip_targets = None
             return None
+        if not self._wrist_depth_sane(keypoints3d):
+            self._last_targets = None
+            self._last_pip_targets = None
+            return None
         frame = self._palm_frame_from_keypoints(keypoints3d)
         wrist = keypoints3d[self.WRIST_ID]
         rel = np.stack([keypoints3d[pip_ids[name]] - wrist
@@ -269,8 +277,15 @@ class _TipSpaceRetargeter:
         """
         if self.scale is None:
             observed = float(np.median(np.linalg.norm(rel, axis=1)))
-            # track the running max (with slow decay) as the full-extension reach
-            self._human_reach = max(self._human_reach * 0.999, observed)
+            # Spike rejection: one glitched frame (e.g. wrist depth-lifted
+            # onto the background) inflates every tip vector uniformly and
+            # the median cannot reject it.  The running max decays
+            # glacially (x0.999/frame), so absorbing the spike would keep
+            # the scale clipped at its lower bound -- a persistent fist.
+            # Only plausible reaches within the human band and within a
+            # 1.6x extension step of the current estimate are accepted.
+            if 0.06 <= observed <= 0.30 and observed <= self._human_reach * 1.6:
+                self._human_reach = max(self._human_reach * 0.999, observed)
             return float(np.clip(self._robot_reach / self._human_reach, 0.8, 1.8))
         return self.scale
 
@@ -318,6 +333,33 @@ class _TipSpaceRetargeter:
         return self._palm_frame
 
     mount_t = np.zeros(3)
+
+    @staticmethod
+    def _wrist_depth_sane(keypoints3d: np.ndarray) -> bool:
+        """Whether the wrist keypoint agrees with the palm keypoints.
+
+        During hand (re-)entry the wrist often sits at the frame edge,
+        where its depth window samples the background: the wrist point is
+        then lifted far behind the palm, and EVERY wrist-relative tip
+        vector is inflated uniformly -- the median cannot reject it, the
+        monotonic reach max absorbs it, and the reach scale clips to its
+        lower bound, curling the robot into a fist for minutes.  Frames
+        with a glitched wrist must hold instead of updating targets/scale.
+
+        Args:
+            keypoints3d: (21, 3) camera-frame keypoints.
+
+        Returns:
+            True when the wrist lies within 0.10 m of the median MCP
+            position (orientation-independent sanity bound).
+        """
+        kp = np.asarray(keypoints3d, dtype=np.float64)
+        wrist = kp[0]
+        mcp = kp[[1, 5, 9, 13, 17]]
+        mcp = mcp[np.isfinite(mcp).all(axis=1)]
+        if not np.isfinite(wrist).all() or mcp.shape[0] < 3:
+            return False
+        return bool(np.linalg.norm(wrist - np.median(mcp, axis=0)) < 0.10)
 
     def _tips(self, q16: np.ndarray) -> np.ndarray:
         """(5, 3) robot fingertip positions at q16 (chain order).

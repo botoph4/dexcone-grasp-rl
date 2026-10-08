@@ -18,14 +18,35 @@ from p24grasp.teleop.pipeline import TeleopPipeline, format_angles
 
 def _auto_detect_source(width: int, height: int, fps: int,
                         frame_sync: bool, align: str):
-    """Try the RealSense backend first, then fall back to Orbbec."""
+    """Detect the camera backend: the cached backend from the previous run
+    is tried first (instant on repeat runs), then a fast device-list probe
+    skips absent hardware before the slow full stream start, and the
+    confirmed device model is printed."""
+    from p24grasp.teleop.camera import (  # noqa: E402
+        _load_backend_cache,
+        _save_backend_cache,
+        probe_orbbec_present,
+        probe_realsense_present,
+    )
+
+    probes = {"realsense": probe_realsense_present,
+              "orbbec": probe_orbbec_present}
+    order = ["realsense", "orbbec"]
+    cached = _load_backend_cache()
+    if cached in order:
+        order.remove(cached)
+        order.insert(0, cached)
     errors = []
-    for kind in ("realsense", "orbbec"):
+    for kind in order:
+        if not probes[kind]():
+            errors.append(f"{kind}: no device on the bus")
+            continue
         source = make_camera_source(kind, width, height, fps,
                                     frame_sync=frame_sync, align=align)
         try:
             source.start()
-            print(f"[{kind}] device detected", flush=True)
+            print(f"[{kind}] {source.describe()} detected", flush=True)
+            _save_backend_cache(kind)
             return source
         except RuntimeError as exc:
             errors.append(f"{kind}: {exc}")
@@ -33,7 +54,9 @@ def _auto_detect_source(width: int, height: int, fps: int,
                 source.close()
             except Exception:  # pylint: disable=broad-exception-caught
                 pass
-    raise RuntimeError("no RGB-D camera detected: " + " | ".join(errors))
+    hint = (" (macOS: the Orbbec SDK needs sudo to open the UVC camera; "
+            "check the device list if both probes report 'no device')")
+    raise RuntimeError("no RGB-D camera detected: " + " | ".join(errors) + hint)
 
 
 def make_retargeter(kind: str, hand_calibration_path=None, lateral_enabled=True):
