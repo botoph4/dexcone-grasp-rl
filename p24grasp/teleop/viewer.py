@@ -315,8 +315,11 @@ def run_mujoco_viewer(source, detector, retargeter=None, control_hz: float = 60.
         now = time.perf_counter()
         if now - last_print >= 2.0:
             last_print = now
+            timing = pipeline.timing_ms
             print(f"[teleop] map={stats['map_rate']:.0f}Hz "
                   f"ctrl={stats['control_rate']:.0f}Hz "
+                  f"read={timing['read']:.0f}ms det={timing['detect']:.0f}ms "
+                  f"solve={timing['retarget']:.0f}ms "
                   f"presence={out.detection.presence:.2f} "
                   f"dof_frac={out.filtered.dof_frac:.2f} "
                   f"state={out.filtered.state.value}", flush=True)
@@ -363,8 +366,11 @@ def run_local_viewer(source, detector, retargeter=None, control_hz: float = 60.0
         now = time.perf_counter()
         if now - last_print >= 2.0:
             last_print = now
+            timing = pipeline.timing_ms
             print(f"[teleop] map={stats['map_rate']:.0f}Hz "
                   f"ctrl={stats['control_rate']:.0f}Hz "
+                  f"read={timing['read']:.0f}ms det={timing['detect']:.0f}ms "
+                  f"solve={timing['retarget']:.0f}ms "
                   f"presence={out.detection.presence:.2f} "
                   f"state={out.filtered.state.value}", flush=True)
         key = cv2.waitKey(1) & 0xFF
@@ -415,8 +421,11 @@ def run_http_viewer(source, detector, retargeter=None, port: int = 8080) -> None
             now = time.perf_counter()
             if now - last_print >= 2.0:
                 last_print = now
+                timing = pipeline.timing_ms
                 print(f"[teleop] map={stats['map_rate']:.0f}Hz "
                       f"ctrl={stats['control_rate']:.0f}Hz "
+                      f"read={timing['read']:.0f}ms det={timing['detect']:.0f}ms "
+                      f"solve={timing['retarget']:.0f}ms "
                       f"presence={out.detection.presence:.2f} "
                       f"state={out.filtered.state.value}", flush=True)
             if now - last_push >= 1.0 / 15.0:  # ~15 Hz stream

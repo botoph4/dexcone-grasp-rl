@@ -25,11 +25,16 @@ own kinematics (zero extra dependencies).
 """
 from __future__ import annotations
 
+# pylint: disable=too-many-lines
+# the retargeting backends share one scaffolding class; splitting the file
+# would scatter the solver invariants across modules
+
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
 import numpy as np
+from scipy.optimize import least_squares
 
 from p24grasp.teleop.angles import HandAngles, thumb_over_finger
 from p24grasp.teleop.lateral import (
@@ -170,6 +175,11 @@ class _TipSpaceRetargeter:
         # the thumb covers it (the keypoints then belong to the thumb)
         self._last_targets: np.ndarray | None = None
         self._last_pip_targets: np.ndarray | None = None
+        # targets of the last solve: an unchanged target set reuses the
+        # last solution (the ~9 ms warm solve is pure overhead on holds)
+        self._last_solve_targets: np.ndarray | None = None
+        # whether _q_prev holds a real solution (False right after reset)
+        self._solved = False
 
     def _chain(self, name):
         """Look up a finger chain of the hand model by name.
@@ -441,6 +451,8 @@ class _TipSpaceRetargeter:
         self._palm_frame = None
         self._last_targets = None
         self._last_pip_targets = None
+        self._last_solve_targets = None
+        self._solved = False
         self._human_reach = self._human_reach_init
 
 
@@ -490,8 +502,6 @@ class FingertipRetargeter(_TipSpaceRetargeter):
             (20,) URDF-order joint command in degrees, warm-started from
             the previous solution and clamped to the URDF limits.
         """
-        from scipy.optimize import least_squares  # noqa: E402
-
         result = least_squares(
             self._residuals, self._q_prev, args=(targets,),
             bounds=(self._lb, self._ub),
@@ -543,13 +553,16 @@ class HybridRetargeter(_TipSpaceRetargeter):
     def __init__(self, scale: float | None = None, tip_weight: float = 0.5,
                  pinch_weight: float = 2.0, reg_weight: float = 10.0, *,
                  pip_weight: float = 0.5,
-                 max_nfev: int = 200,
+                 max_nfev: int = 80,
                  prior_weights: dict | None = None,
                  lateral_calibration_path: str | Path | None = None,
                  hand_calibration_path: str | Path | None = None,
                  lateral_enabled: bool = True):
-        # max_nfev=200 covers the cold start (first frame from the zero
-        # pose); warm-started frames converge in a single iteration.
+        # max_nfev=80 bounds the cold-start solve (first frame after a
+        # reset) to ~70 ms -- the old 400 budget let dogbox grind against
+        # the joint bounds for ~350 ms on a near-open hand; warm-started
+        # frames converge in one iteration (~35 evals) and the skip checks
+        # in retarget() avoid the solve altogether when it is not needed.
         # prior_weights: per-joint-class regularization strength (reference
         # workspace configs): {"mcp_flexion": 0.01, "lateral": 0.05,
         # "distal": 0.01}; thumb priors are zero (the optimizer owns the
@@ -715,8 +728,6 @@ class HybridRetargeter(_TipSpaceRetargeter):
             residual (method="dogbox" -- trf stalls when the warm start
             sits exactly on a joint bound).
         """
-        from scipy.optimize import least_squares  # noqa: E402
-
         # the prior must respect the bounds exactly: the URDF limits are
         # truncated decimals and radians(80 deg) exceeds them by ~1e-10
         q0 = np.clip(np.asarray(q0, dtype=np.float64), self._lb, self._ub)
@@ -726,13 +737,19 @@ class HybridRetargeter(_TipSpaceRetargeter):
             targets[self._chain_names.index("index")]))
         # Warm-start sanity: after an occlusion the stale previous solution
         # can be far from the new targets; start from whichever of the stale
-        # solution and the analytical prior has the lower residual.
-        x0 = self._q_prev.copy()
-        cost_stale = float(np.sum(
-            self._residuals(x0, targets, q0, pinch_human, pip_targets) ** 2))
-        cost_prior = float(np.sum(
-            self._residuals(q0, targets, q0, pinch_human, pip_targets) ** 2))
-        if cost_prior < cost_stale:
+        # solution and the analytical prior has the lower residual.  A
+        # reset leaves no real solution at all (the zero vector): starting
+        # from it makes dogbox grind against the joint bounds for hundreds
+        # of ms on a near-open hand, so cold starts begin at q0 instead.
+        if self._solved:
+            x0 = self._q_prev.copy()
+            cost_stale = float(np.sum(
+                self._residuals(x0, targets, q0, pinch_human, pip_targets) ** 2))
+            cost_prior = float(np.sum(
+                self._residuals(q0, targets, q0, pinch_human, pip_targets) ** 2))
+            if cost_prior < cost_stale:
+                x0 = q0.copy()
+        else:
             x0 = q0.copy()
         # method="dogbox": trf stalls when the warm start sits exactly on a
         # joint bound (the zero pose is the lower bound for 12 of 16 DOFs).
@@ -743,6 +760,8 @@ class HybridRetargeter(_TipSpaceRetargeter):
             jac="2-point", max_nfev=self.max_nfev)
         self._q_prev = np.clip(result.x, self._lb, self._ub)
         self._q20_prev = self._to_urdf_degrees(self._q_prev)
+        self._last_solve_targets = np.asarray(targets, dtype=np.float64).copy()
+        self._solved = True
         return self._q20_prev.copy()
 
     def retarget(self, angles: HandAngles,
@@ -786,6 +805,23 @@ class HybridRetargeter(_TipSpaceRetargeter):
             # the hand leaves the view.  solve() warm-starts from this held
             # pose, so re-entry continues smoothly.
             return self._q20_prev.copy()
+        # unchanged targets: reuse the last solution (a held hand needs no
+        # re-solve -- the warm solve would be ~9 ms of pure overhead)
+        if self._last_solve_targets is not None and \
+                np.linalg.norm(targets - self._last_solve_targets,
+                               axis=1).max() < 1e-3:
+            return self._q20_prev.copy()
+        # the joint mapping alone already reaches the targets (near-open
+        # hand): skip the solve -- a cold solve starting from the joint
+        # bounds grinds for hundreds of ms on exactly this case
+        q0_clamped = np.clip(q0, self._lb, self._ub)
+        tips_q0 = self._tips(q0_clamped)
+        if np.linalg.norm(tips_q0 - targets, axis=1).max() < 5e-3:
+            q20 = self._to_urdf_degrees(q0_clamped)
+            self._q_prev = q0_clamped.copy()
+            self._q20_prev = q20.copy()
+            self._last_solve_targets = targets.copy()
+            return q20
         pip_targets = self.pip_targets_from_keypoints(keypoints3d)
         q20 = self.solve(targets, q0, pip_targets)
         if not self.lateral_enabled:

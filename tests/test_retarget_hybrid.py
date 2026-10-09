@@ -267,3 +267,22 @@ def test_reset_restores_first_startup_state():
         q_re = ret.retarget(_angles(flexion=40.0),
                             keypoints3d=_straight_keypoints())
     np.testing.assert_allclose(q_re, q_fresh, atol=1e-6)
+
+
+def test_unchanged_targets_skip_the_solve():
+    ret = _retargeter()
+    calls = []
+
+    def counting_solve(targets, q0, pip_targets=None):
+        calls.append(1)
+        return HybridRetargeter.solve(ret, targets, q0, pip_targets)
+
+    ret.solve = counting_solve  # pylint: disable=attribute-defined-outside-init
+    kp = _straight_keypoints()
+    q1 = ret.retarget(_angles(flexion=40.0), keypoints3d=kp)
+    after_first = len(calls)
+    # identical targets (a held hand): the last solution is reused, the
+    # ~9 ms warm solve must not run again
+    q2 = ret.retarget(_angles(flexion=40.0), keypoints3d=kp)
+    assert len(calls) == after_first
+    np.testing.assert_allclose(q2, q1, atol=1e-12)

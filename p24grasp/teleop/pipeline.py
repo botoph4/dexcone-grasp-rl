@@ -80,6 +80,25 @@ class TeleopPipeline:
         self._last_command = np.zeros(20)
         self._in_absence = False
         self.last_output: TeleopFrame | None = None
+        # per-stage durations (ms, EMA) for the frequency diagnostics:
+        # read (camera wait included), detect, angles+state, retarget
+        self._timing_ms = {"read": 0.0, "detect": 0.0,
+                           "angles": 0.0, "retarget": 0.0}
+
+    @property
+    def timing_ms(self) -> dict:
+        """Per-stage durations in ms (exponential moving averages), used by
+        the viewers' frequency statistics: read / detect / angles+state /
+        retarget."""
+        return dict(self._timing_ms)
+
+    def _update_timing(self, read_s: float, detect_s: float,
+                       angles_s: float, retarget_s: float) -> None:
+        for key, value in (("read", read_s), ("detect", detect_s),
+                           ("angles", angles_s), ("retarget", retarget_s)):
+            ms = value * 1000.0
+            self._timing_ms[key] = ms if not self._timing_ms[key] else \
+                0.9 * self._timing_ms[key] + 0.1 * ms
 
     def step(self) -> TeleopFrame:
         """Read one frame and run detect -> angles -> state machine ->
@@ -89,13 +108,17 @@ class TeleopPipeline:
             :class:`TeleopFrame` with the frame (None = source exhausted),
             detection, raw/filtered angles, the 20-joint command, and dt.
         """
+        t0 = time.perf_counter()
         frame = self.source.read()
         dt = self._dt(frame)
+        t1 = time.perf_counter()
         detection = self.detector.detect(frame) if frame is not None else \
             HandDetection(keypoints3d=np.full((21, 3), np.nan),
                           visibility=np.zeros(21), presence=0.0)
+        t2 = time.perf_counter()
         raw = angles_from_keypoints(detection)
         filtered = self.state_machine.update(raw, dt)
+        t3 = time.perf_counter()
         if filtered.state in (State.HOLD, State.LOST):
             if not self._in_absence:
                 # the hand left the view: reset to the open palm (the state
@@ -112,6 +135,7 @@ class TeleopPipeline:
         command = self.retargeter.retarget(filtered.angles, detection.keypoints3d)
         command = self._slew_limit_command(command, dt)
         self._last_command = command.copy()
+        self._update_timing(t1 - t0, t2 - t1, t3 - t2, time.perf_counter() - t3)
         out = TeleopFrame(frame=frame, detection=detection, raw_angles=raw,
                           filtered=filtered, command=command, dt=dt)
         self.last_output = out

@@ -206,3 +206,15 @@ def test_fixed_rate_control_ticks_at_the_control_hz():
     assert control._stats["control_hz"] == 100.0  # pylint: disable=protected-access
     assert control._stats["map_rate"] > 0.0  # pylint: disable=protected-access
     assert control._stats["control_rate"] > 0.0  # pylint: disable=protected-access
+
+
+def test_pipeline_reports_stage_timings():
+    pipeline = TeleopPipeline(_FakeSource(3), _FakeDetector(),
+                              retargeter=_SwitchRetargeter())
+    for _ in range(3):
+        pipeline.step()
+    timing = pipeline.timing_ms
+    assert set(timing) == {"read", "detect", "angles", "retarget"}
+    assert all(value >= 0.0 for value in timing.values())
+    assert timing["retarget"] > 0.0 or timing["detect"] > 0.0
+    pipeline.close()
