@@ -175,9 +175,6 @@ class _TipSpaceRetargeter:
         # the thumb covers it (the keypoints then belong to the thumb)
         self._last_targets: np.ndarray | None = None
         self._last_pip_targets: np.ndarray | None = None
-        # targets of the last solve: an unchanged target set reuses the
-        # last solution (the ~9 ms warm solve is pure overhead on holds)
-        self._last_solve_targets: np.ndarray | None = None
         # whether _q_prev holds a real solution (False right after reset)
         self._solved = False
 
@@ -451,7 +448,6 @@ class _TipSpaceRetargeter:
         self._palm_frame = None
         self._last_targets = None
         self._last_pip_targets = None
-        self._last_solve_targets = None
         self._solved = False
         self._human_reach = self._human_reach_init
 
@@ -553,16 +549,16 @@ class HybridRetargeter(_TipSpaceRetargeter):
     def __init__(self, scale: float | None = None, tip_weight: float = 0.5,
                  pinch_weight: float = 2.0, reg_weight: float = 10.0, *,
                  pip_weight: float = 0.5,
-                 max_nfev: int = 80,
+                 max_nfev: int = 200,
                  prior_weights: dict | None = None,
                  lateral_calibration_path: str | Path | None = None,
                  hand_calibration_path: str | Path | None = None,
                  lateral_enabled: bool = True):
-        # max_nfev=80 bounds the cold-start solve (first frame after a
-        # reset) to ~70 ms -- the old 400 budget let dogbox grind against
-        # the joint bounds for ~350 ms on a near-open hand; warm-started
-        # frames converge in one iteration (~35 evals) and the skip checks
-        # in retarget() avoid the solve altogether when it is not needed.
+        # max_nfev=200 covers hard cold starts; with the cold start at q0
+        # (see solve()) typical solves converge in a single iteration.
+        # NOTE: do NOT skip solves on "unchanged" targets -- a slowly
+        # moving finger shifts its target by <1 mm per frame, and any
+        # skip threshold freezes slow motions (a stuck-looking finger).
         # prior_weights: per-joint-class regularization strength (reference
         # workspace configs): {"mcp_flexion": 0.01, "lateral": 0.05,
         # "distal": 0.01}; thumb priors are zero (the optimizer owns the
@@ -760,7 +756,6 @@ class HybridRetargeter(_TipSpaceRetargeter):
             jac="2-point", max_nfev=self.max_nfev)
         self._q_prev = np.clip(result.x, self._lb, self._ub)
         self._q20_prev = self._to_urdf_degrees(self._q_prev)
-        self._last_solve_targets = np.asarray(targets, dtype=np.float64).copy()
         self._solved = True
         return self._q20_prev.copy()
 
@@ -805,23 +800,6 @@ class HybridRetargeter(_TipSpaceRetargeter):
             # the hand leaves the view.  solve() warm-starts from this held
             # pose, so re-entry continues smoothly.
             return self._q20_prev.copy()
-        # unchanged targets: reuse the last solution (a held hand needs no
-        # re-solve -- the warm solve would be ~9 ms of pure overhead)
-        if self._last_solve_targets is not None and \
-                np.linalg.norm(targets - self._last_solve_targets,
-                               axis=1).max() < 1e-3:
-            return self._q20_prev.copy()
-        # the joint mapping alone already reaches the targets (near-open
-        # hand): skip the solve -- a cold solve starting from the joint
-        # bounds grinds for hundreds of ms on exactly this case
-        q0_clamped = np.clip(q0, self._lb, self._ub)
-        tips_q0 = self._tips(q0_clamped)
-        if np.linalg.norm(tips_q0 - targets, axis=1).max() < 5e-3:
-            q20 = self._to_urdf_degrees(q0_clamped)
-            self._q_prev = q0_clamped.copy()
-            self._q20_prev = q20.copy()
-            self._last_solve_targets = targets.copy()
-            return q20
         pip_targets = self.pip_targets_from_keypoints(keypoints3d)
         q20 = self.solve(targets, q0, pip_targets)
         if not self.lateral_enabled:

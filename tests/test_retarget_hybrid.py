@@ -269,20 +269,14 @@ def test_reset_restores_first_startup_state():
     np.testing.assert_allclose(q_re, q_fresh, atol=1e-6)
 
 
-def test_unchanged_targets_skip_the_solve():
-    ret = _retargeter()
-    calls = []
-
-    def counting_solve(targets, q0, pip_targets=None):
-        calls.append(1)
-        return HybridRetargeter.solve(ret, targets, q0, pip_targets)
-
-    ret.solve = counting_solve  # pylint: disable=attribute-defined-outside-init
+def test_slow_finger_motion_is_followed():
+    # regression: an "unchanged targets" skip with a 1 mm threshold froze
+    # slowly moving fingers (sub-mm target shift per frame -> stuck thumb /
+    # ring finger); the solve must run on every changing frame
+    ret = _reset_retargeter()
+    for _ in range(20):
+        q1 = ret.retarget(_angles(flexion=40.0), keypoints3d=_straight_keypoints())
     kp = _straight_keypoints()
-    q1 = ret.retarget(_angles(flexion=40.0), keypoints3d=kp)
-    after_first = len(calls)
-    # identical targets (a held hand): the last solution is reused, the
-    # ~9 ms warm solve must not run again
+    kp[8, 2] += 0.0005  # index tip drifts 0.5 mm (slow motion)
     q2 = ret.retarget(_angles(flexion=40.0), keypoints3d=kp)
-    assert len(calls) == after_first
-    np.testing.assert_allclose(q2, q1, atol=1e-12)
+    assert np.abs(q2 - q1).max() > 0.0  # the finger followed the drift
