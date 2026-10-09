@@ -304,7 +304,7 @@ class FixedRateControl:
                 self._command = out.command
                 now = time.perf_counter()
                 if new_prev is not None and now > new_prev:
-                    instant = 1.0 / (now - new_prev)
+                    instant = min(1.0 / (now - new_prev), 2.0 * self.control_hz)
                     self._map_rate = (instant if not self._map_rate
                                       else 0.9 * self._map_rate + 0.1 * instant)
                 new_prev = now
@@ -316,13 +316,20 @@ class FixedRateControl:
             # fixed-rate scheduling: sleep the remainder of the tick
             next_tick += period
             delay = next_tick - time.perf_counter()
+            overran = delay <= 0
             if delay > 0:
                 time.sleep(delay)
             else:  # the tick overran: resync the schedule
                 next_tick = time.perf_counter()
             now = time.perf_counter()
-            if now > tick_prev:
-                instant = 1.0 / (now - tick_prev)
+            interval = now - tick_prev
+            if overran:
+                # an overrun tick costs at least one period -- feeding its
+                # (near-zero) real interval into the EMA produces absurd
+                # spikes (measured 8000+ Hz) during heavy frames
+                interval = period
+            if interval > 0:
+                instant = min(1.0 / interval, 2.0 * self.control_hz)
                 self._control_rate = (instant if not self._control_rate
                                       else 0.9 * self._control_rate + 0.1 * instant)
             tick_prev = now

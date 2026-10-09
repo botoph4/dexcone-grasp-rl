@@ -187,8 +187,9 @@ def camera_main(argv: list[str] | None = None) -> int:
                              "flexion range, saved for later runs")
     parser.add_argument("--mujoco-view", action="store_true",
                         help="open the standard interactive MuJoCo viewer "
-                             "popup for the mapped P24 hand (rotate/zoom, "
-                             "sim_viewer look; runs in an mjpython "
+                             "popup: the mapped P24 hand plus the detected "
+                             "human hand skeleton side by side (rotate/"
+                             "zoom, sim_viewer look; runs in an mjpython "
                              "subprocess automatically); combines with "
                              "--local")
     parser.add_argument("--port", type=int, default=8080,

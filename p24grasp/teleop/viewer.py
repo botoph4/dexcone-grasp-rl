@@ -383,8 +383,15 @@ def run_viewers(source, detector, retargeter=None, *,
                 mujoco_popup = False  # the popup window was closed
             else:
                 try:
-                    popup_proc.stdin.write(
-                        " ".join(f"{value:.3f}" for value in command) + "\n")
+                    # 20 joint angles + 21 keypoints (nan = missing) per
+                    # line: the popup draws the detected human skeleton
+                    # beside the robot hand
+                    payload = " ".join(f"{value:.4f}" for value in command)
+                    keypoints = out.detection.keypoints3d
+                    payload += " " + " ".join(
+                        "nan" if not np.isfinite(value) else f"{value:.4f}"
+                        for value in keypoints.ravel())
+                    popup_proc.stdin.write(payload + "\n")
                     popup_proc.stdin.flush()
                 except (BrokenPipeError, OSError):
                     mujoco_popup = False
