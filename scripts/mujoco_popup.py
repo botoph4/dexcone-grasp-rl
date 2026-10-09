@@ -93,7 +93,7 @@ def _rotation_z_to(direction: np.ndarray) -> np.ndarray:
     return np.eye(3) + sine * cross + (1.0 - cosine) * (cross @ cross)
 
 
-def apply_frame(model, data, qpos_ids, joint_ids, bone_ids,
+def apply_frame(model, data, *, qpos_ids, joint_ids, bone_ids,
                 command: np.ndarray, keypoints3d: np.ndarray) -> None:
     """Apply the 20-joint command and update the skeleton geoms.
 
@@ -146,8 +146,8 @@ def main() -> int:
             keypoints = np.full((21, 3), np.nan)
             if values.shape[0] >= 20 + 63:
                 keypoints = values[20:83].reshape(21, 3)
-            apply_frame(model, data, qpos_ids, joint_ids, bone_ids,
-                        command, keypoints)
+            apply_frame(model, data, qpos_ids=qpos_ids, joint_ids=joint_ids,
+                        bone_ids=bone_ids, command=command, keypoints3d=keypoints)
             viewer.sync()
             if not viewer.is_running():
                 break

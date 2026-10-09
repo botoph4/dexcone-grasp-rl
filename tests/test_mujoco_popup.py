@@ -23,8 +23,9 @@ def test_apply_frame_updates_robot_and_skeleton():
     keypoints = np.full((21, 3), np.nan)
     keypoints[5] = (0.01, -0.01, 0.30)  # index MCP visible
     keypoints[6] = (0.01, -0.01, 0.34)
-    apply_frame(model, data, qpos_ids, joint_ids, bone_ids,
-                command=np.full(20, 30.0), keypoints3d=keypoints)
+    apply_frame(model, data, qpos_ids=qpos_ids, joint_ids=joint_ids,
+                bone_ids=bone_ids, command=np.full(20, 30.0),
+                keypoints3d=keypoints)
     # robot command applied
     np.testing.assert_allclose(data.qpos[qpos_ids[4]], np.radians(30.0))
     # the visible joint sphere moved to the scene position
