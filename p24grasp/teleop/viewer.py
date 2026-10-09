@@ -336,6 +336,7 @@ def run_viewers(source, detector, retargeter=None, *,
         control_hz: fixed control tick frequency.
     """
     import mujoco  # noqa: E402
+    import mujoco.viewer  # noqa: E402,F401  # submodule is not auto-imported
     from p24grasp.paths import ensure_hand_xml  # noqa: E402
     from p24grasp.teleop.retarget import P24_JOINT_NAMES  # noqa: E402
 
