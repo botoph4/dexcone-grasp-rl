@@ -299,36 +299,90 @@ def _status_lines(out, stats) -> list[str]:
     ]
 
 
-def run_mujoco_viewer(source, detector, retargeter=None, control_hz: float = 60.0) -> None:
-    """Interactive MuJoCo viewer window for the mapped P24 hand.
+def compose_camera_display(rgb_overlay: np.ndarray, depth_rgb: np.ndarray,
+                           text_lines: list[str]) -> np.ndarray:
+    """Camera-window frame: color+keypoints | depth on top, a status strip
+    below (the sim hand lives in the separate standard MuJoCo popup)."""
+    height, width = rgb_overlay.shape[:2]
+    depth = np.asarray(Image.fromarray(depth_rgb).resize((width, height)))
+    status = np.full((70, 2 * width, 3), 20, np.uint8)
+    pil = Image.fromarray(status)
+    draw = ImageDraw.Draw(pil)
+    for i, line in enumerate(text_lines):
+        draw.text((12, 8 + 22 * i), line, fill=(255, 255, 255))
+    return np.vstack([np.hstack([rgb_overlay, depth]), np.asarray(pil)])
 
-    The standard ``mujoco.viewer.launch_passive`` popup (rotate/zoom with
-    the mouse, like sim_viewer), driven by a fixed 60 Hz control loop over
-    the teleop pipeline (the pipeline itself runs at camera rate on a
-    producer thread; the viewer stays on this thread).
+
+def run_viewers(source, detector, retargeter=None, *,
+                mujoco_popup: bool = False, cv2_window: bool = False,
+                control_hz: float = 60.0) -> None:
+    """The sim popups over the fixed-rate control loop.
+
+    The pipeline runs on the control loop's producer thread at the
+    camera's frame rate; the consumer ticks at the fixed ``control_hz``
+    and only does light work: applying the latest command to the
+    standard MuJoCo viewer popup (``launch_passive`` -- no custom mesh
+    rendering) and, throttled to ~15 Hz, the cv2 camera window
+    (color+keypoints | depth | status -- no sim panel).  Keeping the
+    heavy 2x2 grid render out of the consumer is what lets the pipeline
+    reach its full frame rate.
+
+    Args:
+        source: the open :class:`FrameSource`.
+        detector: the :class:`HandDetector`.
+        retargeter: the mapping backend.
+        mujoco_popup: open the interactive standard MuJoCo viewer popup.
+        cv2_window: open the cv2 camera window.
+        control_hz: fixed control tick frequency.
     """
     import mujoco  # noqa: E402
     from p24grasp.paths import ensure_hand_xml  # noqa: E402
     from p24grasp.teleop.retarget import P24_JOINT_NAMES  # noqa: E402
 
-    model = mujoco.MjModel.from_xml_string(_with_lights(ensure_hand_xml()))
-    data = mujoco.MjData(model)
-    qpos_ids = np.array(
-        [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
-         for name in P24_JOINT_NAMES], dtype=int)
-    if (qpos_ids < 0).any():
-        raise RuntimeError("some P24 joints are missing from the MJCF build")
-
     pipeline = TeleopPipeline(source, detector, retargeter=retargeter)
-    viewer = mujoco.viewer.launch_passive(model, data)
+    model = data = viewer = None
+    qpos_ids = None
+    if mujoco_popup:
+        model = mujoco.MjModel.from_xml_string(_with_lights(ensure_hand_xml()))
+        data = mujoco.MjData(model)
+        qpos_ids = np.array(
+            [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
+             for name in P24_JOINT_NAMES], dtype=int)
+        if (qpos_ids < 0).any():
+            raise RuntimeError("some P24 joints are missing from the MJCF build")
+        viewer = mujoco.viewer.launch_passive(model, data)
+    cv2 = None
+    window_name = "p24 camera"
+    if cv2_window:
+        import cv2  # noqa: E402
+
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
     control = FixedRateControl(pipeline, control_hz=control_hz)
+    last_render = 0.0
     last_print = 0.0
 
     def apply(command: np.ndarray, out, stats: dict) -> bool:
-        nonlocal last_print
-        data.qpos[qpos_ids] = np.radians(command)
-        mujoco.mj_forward(model, data)
-        viewer.sync()
+        nonlocal last_render, last_print
+        if mujoco_popup:
+            data.qpos[qpos_ids] = np.radians(command)
+            mujoco.mj_forward(model, data)
+            viewer.sync()
+            if not viewer.is_running():
+                return False
+        if cv2_window:
+            now = time.perf_counter()
+            if now - last_render >= 1.0 / 15.0:  # ~15 Hz camera window
+                last_render = now
+                uv = _uv_from_keypoints(out.detection.keypoints3d, out.frame)
+                display = compose_camera_display(
+                    overlay_keypoints(out.frame.color, uv,
+                                      out.detection.visibility,
+                                      out.detection.presence, out.filtered.state),
+                    colorize_depth(out.frame.depth),
+                    _status_lines(out, stats))
+                cv2.imshow(window_name, cv2.cvtColor(display, cv2.COLOR_RGB2BGR))
+                if cv2.waitKey(1) & 0xFF in (27, ord("q")):  # Esc or q
+                    return False
         now = time.perf_counter()
         if now - last_print >= 2.0:
             last_print = now
@@ -338,9 +392,8 @@ def run_mujoco_viewer(source, detector, retargeter=None, control_hz: float = 60.
                   f"read={timing['read']:.0f}ms det={timing['detect']:.0f}ms "
                   f"solve={timing['retarget']:.0f}ms "
                   f"presence={out.detection.presence:.2f} "
-                  f"dof_frac={out.filtered.dof_frac:.2f} "
                   f"state={out.filtered.state.value}", flush=True)
-        return viewer.is_running()
+        return True
 
     try:
         control.run(apply)
@@ -348,67 +401,10 @@ def run_mujoco_viewer(source, detector, retargeter=None, control_hz: float = 60.
         print("\nviewer stopped")
     finally:
         control.close()
-        viewer.close()
-
-
-def run_local_viewer(source, detector, retargeter=None, control_hz: float = 60.0) -> None:
-    """cv2 desktop window: 2x2 grid (color+keypoints | depth; P24 | status).
-
-    Single-threaded: the pipeline and the rendering run in one loop.  The
-    2x2 render holds the GIL, so a producer/consumer split (the fixed-rate
-    control) made BOTH threads crawl (measured ~8 Hz vs 26-90 Hz with this
-    loop); the fixed-rate control remains in the MuJoCo and web viewers,
-    whose consumers are light.  The loop rate is shown as map=ctrl in the
-    status panel.
-    """
-    import cv2  # lazy: opencv-contrib-python ships with mediapipe
-
-    pipeline = TeleopPipeline(source, detector, retargeter=retargeter)
-    p24 = P24MeshRenderer()
-    error_panel = None
-    if p24._error is not None:  # pylint: disable=protected-access
-        error_panel = _placeholder(f"P24 render failed: {p24._error}")
-        print(f"[viewer] P24 mesh panel disabled: {p24._error}", flush=True)
-    window_name = "p24 teleop"
-    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-    rate = 0.0
-    last_print = 0.0
-    try:
-        while True:
-            t0 = time.perf_counter()
-            out = pipeline.step()
-            if out.frame is None:
-                break
-            uv = _uv_from_keypoints(out.detection.keypoints3d, out.frame)
-            hand_img = p24.render(out.command)
-            if hand_img is None:
-                hand_img = error_panel  # None when no error: dark placeholder
-            stats = {"map_rate": rate, "control_rate": rate,
-                     "control_hz": control_hz}
-            display = compose_display(
-                overlay_keypoints(out.frame.color, uv, out.detection.visibility,
-                                  out.detection.presence, out.filtered.state),
-                colorize_depth(out.frame.depth),
-                hand_img,
-                _status_lines(out, stats))
-            cv2.imshow(window_name, cv2.cvtColor(display, cv2.COLOR_RGB2BGR))
-            if cv2.waitKey(1) & 0xFF in (27, ord("q")):  # Esc or q
-                break
-            loop_s = time.perf_counter() - t0
-            rate = 1.0 / loop_s if not rate else 0.9 * rate + 0.1 / loop_s
-            if time.perf_counter() - last_print >= 2.0:
-                last_print = time.perf_counter()
-                timing = pipeline.timing_ms
-                print(f"[teleop] map={rate:.0f}Hz ctrl={rate:.0f}Hz "
-                      f"read={timing['read']:.0f}ms det={timing['detect']:.0f}ms "
-                      f"solve={timing['retarget']:.0f}ms "
-                      f"presence={out.detection.presence:.2f} "
-                      f"state={out.filtered.state.value}", flush=True)
-    except KeyboardInterrupt:
-        print("\nviewer stopped")
-    finally:
-        pipeline.close()
-        cv2.destroyAllWindows()
+        if viewer is not None:
+            viewer.close()
+        if cv2 is not None:
+            cv2.destroyAllWindows()
 
 
 def run_http_viewer(source, detector, retargeter=None, port: int = 8080) -> None:

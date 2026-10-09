@@ -138,3 +138,12 @@ def test_calibration_frame_renders_cjk_text():
     if "PingFang" in str(getattr(_cjk_font(16), "path", "")) \
             or "Hiragino" in str(getattr(_cjk_font(16), "path", "")):
         assert text_pixels > 0  # a CJK font is available: text must render
+
+
+def test_compose_camera_display_top_and_status():
+    from p24grasp.teleop.viewer import compose_camera_display
+
+    rgb = np.zeros((120, 160, 3), np.uint8)
+    depth = np.zeros((120, 160, 3), np.uint8)
+    out = compose_camera_display(rgb, depth, ["line1", "line2"])
+    assert out.shape == (120 + 70, 320, 3)  # panels side by side + status strip

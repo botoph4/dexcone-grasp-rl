@@ -171,9 +171,9 @@ def camera_main(argv: list[str] | None = None) -> int:
                         help="serve the 2x2 teleop grid as an MJPEG page "
                              "(camera+keypoints | depth / P24 | status)")
     parser.add_argument("--local", action="store_true",
-                        help="show the live pipeline in a local cv2 window "
-                             "(works under sudo; the web page is unreliable "
-                             "on some macOS/browser combinations)")
+                        help="show the live camera in a local cv2 window "
+                             "(camera+keypoints | depth | status; the sim "
+                             "hand lives in the MuJoCo popup)")
     parser.add_argument("--no-lateral", action="store_true",
                         help="disable the lateral (ab/adduction) mapping: the "
                              "four joint_2 DOFs stay at neutral zero")
@@ -186,8 +186,8 @@ def camera_main(argv: list[str] | None = None) -> int:
                              "fist poses calibrate the lateral bounds and the "
                              "flexion range, saved for later runs")
     parser.add_argument("--mujoco-view", action="store_true",
-                        help="open a separate interactive MuJoCo viewer window "
-                             "for the mapped P24 hand (rotate/zoom, standard "
+                        help="open the standard interactive MuJoCo viewer "
+                             "popup for the mapped P24 hand (rotate/zoom, "
                              "sim_viewer look); combines with --local")
     parser.add_argument("--port", type=int, default=8080,
                         help="viewer port (with --view)")
@@ -237,24 +237,26 @@ def camera_main(argv: list[str] | None = None) -> int:
         return 0
     print(f"[{args.camera}] camera started ({width}x{args.height}@{args.fps}), "
           "waiting for frames...", flush=True)
-    if args.view or args.local:
+    if args.view or args.local or args.mujoco_view:
         from p24grasp.teleop.viewer import (  # noqa: E402
             run_http_viewer,
-            run_local_viewer,
-            run_mujoco_viewer,
+            run_viewers,
         )
 
         retargeter = make_retargeter(args.retarget, args.calibration,
                                      lateral_enabled=not args.no_lateral)
         detector = HandDetector(model_path=args.model)
         try:
-            if args.mujoco_view and not args.local:
-                run_mujoco_viewer(source, detector, retargeter=retargeter)
-            elif args.local:
-                run_local_viewer(source, detector, retargeter=retargeter)
-            else:
+            if args.view:
                 run_http_viewer(source, detector, retargeter=retargeter,
                                 port=args.port)
+            else:
+                # the sim hand lives in the standard MuJoCo popup and the
+                # cv2 window shows the camera only; both are light
+                # consumers on the fixed-rate control loop
+                run_viewers(source, detector, retargeter=retargeter,
+                            mujoco_popup=args.mujoco_view,
+                            cv2_window=args.local)
         except KeyboardInterrupt:
             pass  # second Ctrl-C during shutdown: ignore, cleanup continues
         finally:
