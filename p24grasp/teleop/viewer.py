@@ -7,6 +7,7 @@ state, joint angles and the P24 command.  Run with
 """
 from __future__ import annotations
 
+import sys
 import time
 from pathlib import Path
 
@@ -351,7 +352,21 @@ def run_viewers(source, detector, retargeter=None, *,
              for name in P24_JOINT_NAMES], dtype=int)
         if (qpos_ids < 0).any():
             raise RuntimeError("some P24 joints are missing from the MJCF build")
-        viewer = mujoco.viewer.launch_passive(model, data)
+        try:
+            viewer = mujoco.viewer.launch_passive(model, data)
+        except RuntimeError as exc:
+            if "mjpython" not in str(exc):
+                raise
+            # macOS: the interactive popup needs the Cocoa main thread, so
+            # it only runs under the mjpython trampoline -- degrade to the
+            # camera window and tell the user how to get the popup
+            print("[viewer] macOS 上交互式 MuJoCo 窗口需要 mjpython;"
+                  "本次仅显示相机窗口。打开仿真弹窗请用:\n"
+                  f"[viewer]   sudo {Path(sys.executable).parent / 'mjpython'} "
+                  "scripts/teleop_camera.py --local --mujoco-view ...",
+                  flush=True)
+            mujoco_popup = False
+            viewer = None
     cv2 = None
     window_name = "p24 camera"
     if cv2_window:

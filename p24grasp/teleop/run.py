@@ -188,7 +188,8 @@ def camera_main(argv: list[str] | None = None) -> int:
     parser.add_argument("--mujoco-view", action="store_true",
                         help="open the standard interactive MuJoCo viewer "
                              "popup for the mapped P24 hand (rotate/zoom, "
-                             "sim_viewer look); combines with --local")
+                             "sim_viewer look; macOS: run under mjpython); "
+                             "combines with --local")
     parser.add_argument("--port", type=int, default=8080,
                         help="viewer port (with --view)")
     parser.add_argument("--frame-sync", action="store_true",
