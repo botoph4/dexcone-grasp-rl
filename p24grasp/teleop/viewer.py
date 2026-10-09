@@ -7,6 +7,7 @@ state, joint angles and the P24 command.  Run with
 """
 from __future__ import annotations
 
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -321,12 +322,14 @@ def run_viewers(source, detector, retargeter=None, *,
 
     The pipeline runs on the control loop's producer thread at the
     camera's frame rate; the consumer ticks at the fixed ``control_hz``
-    and only does light work: applying the latest command to the
-    standard MuJoCo viewer popup (``launch_passive`` -- no custom mesh
-    rendering) and, throttled to ~15 Hz, the cv2 camera window
-    (color+keypoints | depth | status -- no sim panel).  Keeping the
-    heavy 2x2 grid render out of the consumer is what lets the pipeline
-    reach its full frame rate.
+    and only does light work: forwarding the latest command to the
+    standard MuJoCo viewer popup (a separate ``mjpython`` subprocess --
+    on macOS the interactive popup needs the Cocoa main thread, which
+    the cv2 window owns, so the two GUIs cannot share one process) and,
+    throttled to ~15 Hz, rendering the cv2 camera window
+    (color+keypoints | depth | status -- no sim panel).  Keeping heavy
+    rendering out of the consumer is what lets the pipeline reach its
+    full frame rate.
 
     Args:
         source: the open :class:`FrameSource`.
@@ -336,37 +339,20 @@ def run_viewers(source, detector, retargeter=None, *,
         cv2_window: open the cv2 camera window.
         control_hz: fixed control tick frequency.
     """
-    import mujoco  # noqa: E402
-    import mujoco.viewer  # noqa: E402,F401  # submodule is not auto-imported
-    from p24grasp.paths import ensure_hand_xml  # noqa: E402
-    from p24grasp.teleop.retarget import P24_JOINT_NAMES  # noqa: E402
-
     pipeline = TeleopPipeline(source, detector, retargeter=retargeter)
-    model = data = viewer = None
-    qpos_ids = None
+    popup_proc = None
     if mujoco_popup:
-        model = mujoco.MjModel.from_xml_string(_with_lights(ensure_hand_xml()))
-        data = mujoco.MjData(model)
-        qpos_ids = np.array(
-            [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
-             for name in P24_JOINT_NAMES], dtype=int)
-        if (qpos_ids < 0).any():
-            raise RuntimeError("some P24 joints are missing from the MJCF build")
-        try:
-            viewer = mujoco.viewer.launch_passive(model, data)
-        except RuntimeError as exc:
-            if "mjpython" not in str(exc):
-                raise
-            # macOS: the interactive popup needs the Cocoa main thread, so
-            # it only runs under the mjpython trampoline -- degrade to the
-            # camera window and tell the user how to get the popup
-            print("[viewer] macOS 上交互式 MuJoCo 窗口需要 mjpython;"
-                  "本次仅显示相机窗口。打开仿真弹窗请用:\n"
-                  f"[viewer]   sudo {Path(sys.executable).parent / 'mjpython'} "
-                  "scripts/teleop_camera.py --local --mujoco-view ...",
-                  flush=True)
+        mjpython = Path(sys.executable).parent / "mjpython"
+        popup_script = Path(__file__).resolve().parent.parent.parent \
+            / "scripts" / "mujoco_popup.py"
+        if not mjpython.exists() or not popup_script.exists():
+            print("[viewer] mjpython/mujoco_popup.py 未找到,"
+                  "无法打开 MuJoCo 仿真弹窗", flush=True)
             mujoco_popup = False
-            viewer = None
+        else:
+            popup_proc = subprocess.Popen(
+                [str(mjpython), str(popup_script)],
+                stdin=subprocess.PIPE, text=True)
     cv2 = None
     window_name = "p24 camera"
     if cv2_window:
@@ -378,13 +364,17 @@ def run_viewers(source, detector, retargeter=None, *,
     last_print = 0.0
 
     def apply(command: np.ndarray, out, stats: dict) -> bool:
-        nonlocal last_render, last_print
-        if mujoco_popup:
-            data.qpos[qpos_ids] = np.radians(command)
-            mujoco.mj_forward(model, data)
-            viewer.sync()
-            if not viewer.is_running():
-                return False
+        nonlocal last_render, last_print, mujoco_popup
+        if mujoco_popup and popup_proc is not None:
+            if popup_proc.poll() is not None:
+                mujoco_popup = False  # the popup window was closed
+            else:
+                try:
+                    popup_proc.stdin.write(
+                        " ".join(f"{value:.3f}" for value in command) + "\n")
+                    popup_proc.stdin.flush()
+                except (BrokenPipeError, OSError):
+                    mujoco_popup = False
         if cv2_window:
             now = time.perf_counter()
             if now - last_render >= 1.0 / 15.0:  # ~15 Hz camera window
@@ -417,8 +407,15 @@ def run_viewers(source, detector, retargeter=None, *,
         print("\nviewer stopped")
     finally:
         control.close()
-        if viewer is not None:
-            viewer.close()
+        if popup_proc is not None:
+            try:
+                popup_proc.stdin.close()
+            except OSError:
+                pass
+            try:
+                popup_proc.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                popup_proc.terminate()
         if cv2 is not None:
             cv2.destroyAllWindows()
 
