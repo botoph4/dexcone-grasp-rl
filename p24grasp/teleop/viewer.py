@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 
-from p24grasp.teleop.pipeline import TeleopPipeline, format_angles
+from p24grasp.teleop.pipeline import FixedRateControl, TeleopPipeline, format_angles
 from p24grasp.teleop.state_machine import State
 
 # MediaPipe 21-keypoint bone pairs (wrist=0, thumb=1-4, index=5-8, ...).
@@ -269,22 +269,26 @@ def compose_display(rgb_overlay: np.ndarray, depth_rgb: np.ndarray,
                       np.hstack([p24, np.asarray(pil)])])
 
 
-def _status_lines(out, fps: float) -> list[str]:
+def _status_lines(out, stats) -> list[str]:
     filtered = out.filtered
     return [
-        f"fps={fps:.0f}  presence={out.detection.presence:.2f}  "
+        f"map={stats.get('map_rate', 0):.0f}Hz  "
+        f"ctrl={stats.get('control_rate', 0):.0f}/"
+        f"{stats.get('control_hz', 60):.0f}Hz  "
+        f"presence={out.detection.presence:.2f}  "
         f"state={filtered.state.value}  ok={filtered.tracking_ok}  "
         f"dof_frac={filtered.dof_frac:.2f}",
         *format_angles(filtered.angles, filtered.state, out.command).splitlines(),
     ]
 
 
-def run_mujoco_viewer(source, detector, retargeter=None) -> None:
+def run_mujoco_viewer(source, detector, retargeter=None, control_hz: float = 60.0) -> None:
     """Interactive MuJoCo viewer window for the mapped P24 hand.
 
     The standard ``mujoco.viewer.launch_passive`` popup (rotate/zoom with
-    the mouse, like sim_viewer), driven live from the teleop pipeline in
-    the same thread -- no threading races on the model data.
+    the mouse, like sim_viewer), driven by a fixed 60 Hz control loop over
+    the teleop pipeline (the pipeline itself runs at camera rate on a
+    producer thread; the viewer stays on this thread).
     """
     import mujoco  # noqa: E402
     from p24grasp.paths import ensure_hand_xml  # noqa: E402
@@ -300,33 +304,36 @@ def run_mujoco_viewer(source, detector, retargeter=None) -> None:
 
     pipeline = TeleopPipeline(source, detector, retargeter=retargeter)
     viewer = mujoco.viewer.launch_passive(model, data)
-    fps = 0.0
-    n_frames = 0
+    control = FixedRateControl(pipeline, control_hz=control_hz)
+    last_print = 0.0
+
+    def apply(command: np.ndarray, out, stats: dict) -> bool:
+        nonlocal last_print
+        data.qpos[qpos_ids] = np.radians(command)
+        mujoco.mj_forward(model, data)
+        viewer.sync()
+        now = time.perf_counter()
+        if now - last_print >= 2.0:
+            last_print = now
+            print(f"[teleop] map={stats['map_rate']:.0f}Hz "
+                  f"ctrl={stats['control_rate']:.0f}Hz "
+                  f"presence={out.detection.presence:.2f} "
+                  f"dof_frac={out.filtered.dof_frac:.2f} "
+                  f"state={out.filtered.state.value}", flush=True)
+        return viewer.is_running()
+
     try:
-        while viewer.is_running():
-            t0 = time.perf_counter()
-            out = pipeline.step()
-            if out.frame is None:
-                continue
-            n_frames += 1
-            fps = 0.9 * fps + 0.1 / max(time.perf_counter() - t0, 1e-6)
-            if n_frames % 60 == 1:
-                print(f"[orbbec] frame {n_frames}: fps={fps:.0f} "
-                      f"presence={out.detection.presence:.2f} "
-                      f"dof_frac={out.filtered.dof_frac:.2f} "
-                      f"state={out.filtered.state.value}", flush=True)
-            data.qpos[qpos_ids] = np.radians(out.command)
-            mujoco.mj_forward(model, data)
-            viewer.sync()
+        control.run(apply)
     except KeyboardInterrupt:
         print("\nviewer stopped")
     finally:
-        pipeline.close()
+        control.close()
         viewer.close()
 
 
-def run_local_viewer(source, detector, retargeter=None) -> None:
-    """cv2 desktop window: 2x2 grid (color+keypoints | depth; P24 | status)."""
+def run_local_viewer(source, detector, retargeter=None, control_hz: float = 60.0) -> None:
+    """cv2 desktop window: 2x2 grid (color+keypoints | depth; P24 | status),
+    driven by a fixed 60 Hz control loop over the pipeline."""
     import cv2  # lazy: opencv-contrib-python ships with mediapipe
 
     pipeline = TeleopPipeline(source, detector, retargeter=retargeter)
@@ -337,38 +344,38 @@ def run_local_viewer(source, detector, retargeter=None) -> None:
         print(f"[viewer] P24 mesh panel disabled: {p24._error}", flush=True)
     window_name = "p24 teleop"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-    fps = 0.0
-    n_frames = 0
+    control = FixedRateControl(pipeline, control_hz=control_hz)
+    last_print = 0.0
+
+    def apply(command: np.ndarray, out, stats: dict) -> bool:
+        nonlocal last_print
+        uv = _uv_from_keypoints(out.detection.keypoints3d, out.frame)
+        hand_img = p24.render(command)
+        if hand_img is None:
+            hand_img = error_panel  # None when no error: dark placeholder
+        display = compose_display(
+            overlay_keypoints(out.frame.color, uv, out.detection.visibility,
+                              out.detection.presence, out.filtered.state),
+            colorize_depth(out.frame.depth),
+            hand_img,
+            _status_lines(out, stats))
+        cv2.imshow(window_name, cv2.cvtColor(display, cv2.COLOR_RGB2BGR))
+        now = time.perf_counter()
+        if now - last_print >= 2.0:
+            last_print = now
+            print(f"[teleop] map={stats['map_rate']:.0f}Hz "
+                  f"ctrl={stats['control_rate']:.0f}Hz "
+                  f"presence={out.detection.presence:.2f} "
+                  f"state={out.filtered.state.value}", flush=True)
+        key = cv2.waitKey(1) & 0xFF
+        return key not in (27, ord("q"))  # Esc or q stops
+
     try:
-        while True:
-            t0 = time.perf_counter()
-            out = pipeline.step()
-            if out.frame is None:
-                continue
-            n_frames += 1
-            fps = 0.9 * fps + 0.1 / max(time.perf_counter() - t0, 1e-6)
-            if n_frames % 60 == 1:
-                print(f"[orbbec] frame {n_frames}: fps={fps:.0f} "
-                      f"presence={out.detection.presence:.2f} "
-                      f"dof_frac={out.filtered.dof_frac:.2f} "
-                      f"state={out.filtered.state.value}", flush=True)
-            uv = _uv_from_keypoints(out.detection.keypoints3d, out.frame)
-            hand_img = p24.render(out.command)
-            if hand_img is None:
-                hand_img = error_panel  # None when no error: dark placeholder
-            display = compose_display(
-                overlay_keypoints(out.frame.color, uv, out.detection.visibility,
-                                  out.detection.presence, out.filtered.state),
-                colorize_depth(out.frame.depth),
-                hand_img,
-                _status_lines(out, fps))
-            cv2.imshow(window_name, cv2.cvtColor(display, cv2.COLOR_RGB2BGR))
-            if cv2.waitKey(1) & 0xFF in (27, ord("q")):  # Esc or q
-                break
+        control.run(apply)
     except KeyboardInterrupt:
         print("\nviewer stopped")
     finally:
-        pipeline.close()
+        control.close()
         cv2.destroyAllWindows()
 
 
@@ -391,57 +398,58 @@ def run_http_viewer(source, detector, retargeter=None, port: int = 8080) -> None
 
     def producer() -> None:
         # The MuJoCo renderer owns a GL context that is NOT thread-safe:
-        # it must be created and used inside this producer thread (creating
-        # it elsewhere and calling render() from here hangs in CGL).
+        # it must be created and used inside this thread (creating it
+        # elsewhere and calling render() from here hangs in CGL).  The
+        # pipeline itself runs on the control loop's producer thread.
         p24 = P24MeshRenderer()
         p24_error_panel = None
         if p24._error is not None:  # pylint: disable=protected-access
             p24_error_panel = _placeholder(f"P24 render failed: {p24._error}")
             print(f"[viewer] P24 mesh panel disabled: {p24._error}", flush=True)
-        fps = 0.0
-        n_frames = 0
+        control = FixedRateControl(pipeline, control_hz=60.0)
         last_push = 0.0
+        last_print = 0.0
+
+        def apply(command: np.ndarray, out, stats: dict) -> bool:
+            nonlocal last_push, last_print
+            now = time.perf_counter()
+            if now - last_print >= 2.0:
+                last_print = now
+                print(f"[teleop] map={stats['map_rate']:.0f}Hz "
+                      f"ctrl={stats['control_rate']:.0f}Hz "
+                      f"presence={out.detection.presence:.2f} "
+                      f"state={out.filtered.state.value}", flush=True)
+            if now - last_push >= 1.0 / 15.0:  # ~15 Hz stream
+                uv = _uv_from_keypoints(out.detection.keypoints3d, out.frame)
+                hand_img = p24.render(command)
+                if hand_img is None:
+                    hand_img = p24_error_panel
+                grid = compose_display(
+                    overlay_keypoints(out.frame.color, uv,
+                                      out.detection.visibility,
+                                      out.detection.presence,
+                                      out.filtered.state),
+                    colorize_depth(out.frame.depth),
+                    hand_img,
+                    _status_lines(out, stats))
+                if grid.shape[1] > 1280:
+                    scale = 1280 / grid.shape[1]
+                    grid = np.asarray(Image.fromarray(grid).resize(
+                        (1280, int(grid.shape[0] * scale))))
+                buffer = io.BytesIO()
+                Image.fromarray(grid).save(buffer, format="JPEG", quality=85)
+                with condition:
+                    state["jpeg"] = buffer.getvalue()
+                    last_push = now
+                    condition.notify_all()
+            return not stop.is_set()
+
         try:
-            while not stop.is_set():
-                t0 = time.perf_counter()
-                out = pipeline.step()
-                if out.frame is None:
-                    continue
-                n_frames += 1
-                fps = 0.9 * fps + 0.1 / max(time.perf_counter() - t0, 1e-6)
-                if n_frames % 60 == 1:
-                    print(f"[orbbec] frame {n_frames}: fps={fps:.0f} "
-                          f"presence={out.detection.presence:.2f} "
-                          f"dof_frac={out.filtered.dof_frac:.2f} "
-                          f"state={out.filtered.state.value}", flush=True)
-                now = time.perf_counter()
-                if now - last_push >= 1.0 / 15.0:  # ~15 Hz stream
-                    uv = _uv_from_keypoints(out.detection.keypoints3d, out.frame)
-                    hand_img = p24.render(out.command)
-                    if hand_img is None:
-                        hand_img = p24_error_panel
-                    grid = compose_display(
-                        overlay_keypoints(out.frame.color, uv,
-                                          out.detection.visibility,
-                                          out.detection.presence,
-                                          out.filtered.state),
-                        colorize_depth(out.frame.depth),
-                        hand_img,
-                        _status_lines(out, fps))
-                    if grid.shape[1] > 1280:
-                        scale = 1280 / grid.shape[1]
-                        grid = np.asarray(Image.fromarray(grid).resize(
-                            (1280, int(grid.shape[0] * scale))))
-                    buffer = io.BytesIO()
-                    Image.fromarray(grid).save(buffer, format="JPEG", quality=85)
-                    with condition:
-                        state["jpeg"] = buffer.getvalue()
-                        last_push = now
-                        condition.notify_all()
+            control.run(apply, stop=stop)
         except KeyboardInterrupt:
             pass
         finally:
-            pipeline.close()
+            control.close()
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):  # pylint: disable=invalid-name
@@ -563,7 +571,8 @@ def run_camera_viewer(source, detector, port: int = 8080, host: str = "0.0.0.0",
                                       out.detection.presence, out.filtered.state),
                     colorize_depth(out.frame.depth),
                     hand_img,
-                    _status_lines(out, fps))
+                    _status_lines(out, {"map_rate": fps, "control_rate": fps,
+                                        "control_hz": fps}))
                 # the full grid is 1696x960: downscale before pushing so the
                 # browser websocket/render loop keeps up (stalled pages show
                 # the stale placeholder)

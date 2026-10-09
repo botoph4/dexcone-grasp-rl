@@ -1,6 +1,8 @@
 """End-to-end teleoperation pipeline: source -> detect -> angles -> machine -> retarget."""
 from __future__ import annotations
 
+import threading
+import time
 from dataclasses import dataclass
 
 import numpy as np
@@ -189,3 +191,127 @@ def format_angles(angles: HandAngles, state: State, command: np.ndarray) -> str:
         f"q_p24(thumb/index) = {np.round(command[:8], 1)}",
     ]
     return "\n".join(lines)
+
+
+class FixedRateControl:
+    """Fixed-rate control loop over the teleop pipeline (producer/consumer).
+
+    A producer thread runs the pipeline at the camera's own frame rate and
+    publishes each output; ``run()`` consumes the latest output at a fixed
+    ``control_hz`` (60 Hz default), re-issuing the last command on ticks
+    without a newer frame (a hold), and measures both rates for the
+    on-screen statistics.
+
+    Threads: the producer owns the pipeline (detector / state machine /
+    retargeter); the consumer -- the caller of ``run`` -- owns the display,
+    so MuJoCo/GL contexts stay on their creation thread.
+    """
+
+    def __init__(self, pipeline: TeleopPipeline, control_hz: float = 60.0):
+        """Wrap ``pipeline`` in a fixed-rate control loop.
+
+        Args:
+            pipeline: the :class:`TeleopPipeline` to run at camera rate.
+            control_hz: the fixed control (tick) frequency.
+        """
+        self._pipeline = pipeline
+        self.control_hz = float(control_hz)
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._latest: TeleopFrame | None = None
+        self._seq = 0
+        self._thread: threading.Thread | None = None
+        # consumer-side statistics
+        self._last_issued_seq = -1
+        self._command = np.zeros(20)
+        self._control_rate = 0.0
+        self._map_rate = 0.0
+        self._stats = {"control_hz": self.control_hz, "control_rate": 0.0,
+                       "map_rate": 0.0, "fresh": False}
+
+    def start(self) -> None:
+        """Start the producer thread (the pipeline runs at camera rate)."""
+        self._thread = threading.Thread(target=self._produce, daemon=True,
+                                        name="teleop-producer")
+        self._thread.start()
+
+    def _produce(self) -> None:
+        """Producer: step the pipeline as fast as frames arrive."""
+        try:
+            while not self._stop.is_set():
+                out = self._pipeline.step()
+                if out.frame is None:
+                    break
+                with self._lock:
+                    self._latest = out
+                    self._seq += 1
+        except Exception:  # pylint: disable=broad-exception-caught
+            pass  # close() unblocking a blocked camera read
+
+    def run(self, apply, stop: threading.Event | None = None) -> None:
+        """Fixed-rate consumer loop; blocks until ``apply`` returns False,
+        ``stop`` is set, or the producer ends (source exhausted).
+
+        Args:
+            apply: callback ``apply(command, out, stats) -> bool | None``
+                called once per tick with the 20-joint command (degrees),
+                the latest pipeline output (repeated between new frames),
+                and the statistics dict (keys: ``control_hz``,
+                ``control_rate``, ``map_rate``, ``fresh``).  Return False
+                to stop the loop.
+            stop: optional external stop event.
+        """
+        self.start()
+        period = 1.0 / self.control_hz
+        next_tick = time.perf_counter()
+        tick_prev = time.perf_counter()
+        new_prev: float | None = None  # wall clock of the last NEW frame
+        while not (stop is not None and stop.is_set()):
+            with self._lock:
+                out, seq = self._latest, self._seq
+            if out is None:
+                # camera not delivering yet: wait for the first frame
+                next_tick = time.perf_counter() + period
+                time.sleep(period)
+                continue
+            fresh = seq != self._last_issued_seq
+            if fresh:
+                self._last_issued_seq = seq
+                self._command = out.command
+                now = time.perf_counter()
+                if new_prev is not None and now > new_prev:
+                    instant = 1.0 / (now - new_prev)
+                    self._map_rate = (instant if not self._map_rate
+                                      else 0.9 * self._map_rate + 0.1 * instant)
+                new_prev = now
+            self._stats["map_rate"] = self._map_rate
+            self._stats["control_rate"] = self._control_rate
+            self._stats["fresh"] = fresh
+            if apply(self._command, out, self._stats) is False:
+                break
+            # fixed-rate scheduling: sleep the remainder of the tick
+            next_tick += period
+            delay = next_tick - time.perf_counter()
+            if delay > 0:
+                time.sleep(delay)
+            else:  # the tick overran: resync the schedule
+                next_tick = time.perf_counter()
+            now = time.perf_counter()
+            if now > tick_prev:
+                instant = 1.0 / (now - tick_prev)
+                self._control_rate = (instant if not self._control_rate
+                                      else 0.9 * self._control_rate + 0.1 * instant)
+            tick_prev = now
+            if not fresh and self._thread is not None \
+                    and not self._thread.is_alive():
+                break  # source exhausted and nothing new will ever arrive
+        self.close()
+
+    def close(self) -> None:
+        """Stop the producer and release the pipeline (idempotent)."""
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+        self._pipeline.close()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)

@@ -6,6 +6,7 @@ pose instead of snapping like a cold start -- these tests pin that down
 with fake sources/detectors/retargeters.
 """
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -14,19 +15,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from p24grasp.teleop.camera import Frame  # noqa: E402
 from p24grasp.teleop.detector import HandDetection  # noqa: E402
-from p24grasp.teleop.pipeline import TeleopPipeline  # noqa: E402
+from p24grasp.teleop.pipeline import FixedRateControl, TeleopPipeline  # noqa: E402
 
 
 class _FakeSource:
     """A fixed-rate stream of ``n`` frames at 60 fps."""
 
-    def __init__(self, n: int):
+    def __init__(self, n: int, read_delay: float = 0.0):
         self._n = n
         self._ts = 0.0
+        self._read_delay = read_delay
 
     def read(self):
         if self._n <= 0:
             return None
+        if self._read_delay:
+            time.sleep(self._read_delay)
         self._n -= 1
         self._ts += 1.0 / 60.0
         return Frame(color=np.zeros((4, 4, 3), np.uint8),
@@ -173,3 +177,32 @@ def test_hand_removal_resets_to_the_open_palm():
     assert max(steps) <= 5.0 + 1e-6
     np.testing.assert_allclose(out.command[0], 0.0, atol=1e-9)
     pipeline.close()
+
+
+def test_fixed_rate_control_ticks_at_the_control_hz():
+    # the source delivers frames at ~50 Hz and the control loop ticks at
+    # 100 Hz: between new frames the loop holds (re-issues) the last
+    # command at the fixed control rate
+    det = _FakeDetector()
+    ret = _SwitchRetargeter()
+    pipeline = TeleopPipeline(_FakeSource(30, read_delay=0.02), det,
+                              retargeter=ret)
+    control = FixedRateControl(pipeline, control_hz=100.0)
+    ticks = []
+
+    def apply(command, out, stats):
+        ticks.append((time.perf_counter(), command.copy(), stats["fresh"]))
+        return True
+
+    control.run(apply)
+    assert ticks, "no ticks ran"
+    elapsed = ticks[-1][0] - ticks[0][0]
+    rate = len(ticks) / elapsed
+    # a fixed-rate loop ticks at ~control_hz regardless of the source rate
+    assert 60.0 <= rate <= 160.0, f"tick rate {rate:.0f} Hz"
+    assert all(len(tick[1]) == 20 for tick in ticks)
+    assert any(tick[2] for tick in ticks)  # fresh frames were consumed
+    assert any(not tick[2] for tick in ticks)  # and holds in between
+    assert control._stats["control_hz"] == 100.0  # pylint: disable=protected-access
+    assert control._stats["map_rate"] > 0.0  # pylint: disable=protected-access
+    assert control._stats["control_rate"] > 0.0  # pylint: disable=protected-access
