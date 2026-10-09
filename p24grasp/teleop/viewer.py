@@ -47,19 +47,36 @@ def overlay_keypoints(color: np.ndarray, uv: np.ndarray, visibility: np.ndarray,
     return np.asarray(image)
 
 
-def colorize_depth(depth_m: np.ndarray) -> np.ndarray:
-    """Jet colormap of valid depth, meters; invalid pixels near-black."""
-    import matplotlib  # core dependency, imported lazily for CLI-only use
+_JET_LUT: np.ndarray | None = None
 
+
+def colorize_depth(depth_m: np.ndarray) -> np.ndarray:
+    """Jet colormap of valid depth, meters; invalid pixels near-black.
+
+    A precomputed 256-entry LUT replaces matplotlib's per-frame colormap
+    call (~30 ms on 848x480 -- far too slow for a 60 Hz display loop);
+    the LUT is built once from matplotlib on first use, the percentile
+    scaling subsamples every 4th valid pixel (full sorts dominate the
+    cost), and the mapping indexes the LUT over the whole array (fancy
+    assignment through the validity mask costs ~8 ms extra).
+    """
+    global _JET_LUT
     valid = np.isfinite(depth_m)
-    img = np.zeros((*depth_m.shape, 3), np.uint8)
-    if valid.any():
-        values = depth_m[valid]
-        lo, hi = np.percentile(values, 1), np.percentile(values, 99)
-        span = max(hi - lo, 1e-6)
-        norm = np.clip((depth_m - lo) / span, 0.0, 1.0)
-        img = (matplotlib.colormaps["jet"](norm)[..., :3] * 255).astype(np.uint8)
-        img[~valid] = 15
+    if not valid.any():
+        return np.zeros((*depth_m.shape, 3), np.uint8)
+    if _JET_LUT is None:
+        import matplotlib  # one-time LUT build
+
+        rgba = matplotlib.colormaps["jet"](np.linspace(0.0, 1.0, 256))
+        _JET_LUT = (rgba[..., :3] * 255).astype(np.uint8)
+    values = depth_m[valid]
+    sampled = values[::4]
+    lo, hi = np.percentile(sampled, 1), np.percentile(sampled, 99)
+    span = max(hi - lo, 1e-6)
+    scaled = np.clip((depth_m - lo) * (1.0 / span), 0.0, 1.0)
+    scaled = np.nan_to_num(scaled, nan=0.0)
+    img = _JET_LUT[(scaled * 255.0).astype(np.uint8)]
+    img[~valid] = 15
     return img
 
 
@@ -349,21 +366,32 @@ def run_local_viewer(source, detector, retargeter=None, control_hz: float = 60.0
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
     control = FixedRateControl(pipeline, control_hz=control_hz)
     last_print = 0.0
+    last_render = 0.0
 
     def apply(command: np.ndarray, out, stats: dict) -> bool:
-        nonlocal last_print
-        uv = _uv_from_keypoints(out.detection.keypoints3d, out.frame)
-        hand_img = p24.render(command)
-        if hand_img is None:
-            hand_img = error_panel  # None when no error: dark placeholder
-        display = compose_display(
-            overlay_keypoints(out.frame.color, uv, out.detection.visibility,
-                              out.detection.presence, out.filtered.state),
-            colorize_depth(out.frame.depth),
-            hand_img,
-            _status_lines(out, stats))
-        cv2.imshow(window_name, cv2.cvtColor(display, cv2.COLOR_RGB2BGR))
+        nonlocal last_print, last_render
+        key = cv2.waitKey(1) & 0xFF
+        if key in (27, ord("q")):  # Esc or q stops
+            return False
         now = time.perf_counter()
+        # The 2x2 grid render costs ~30-50 ms (depth colormap + P24 mesh);
+        # rendering on every 60 Hz tick would cap the control loop at the
+        # render rate.  Throttle the display to ~30 Hz -- each render shows
+        # the latest command, so the sim stays on the 60 Hz control tick.
+        if now - last_render >= 1.0 / 30.0:
+            last_render = now
+            uv = _uv_from_keypoints(out.detection.keypoints3d, out.frame)
+            hand_img = p24.render(command)
+            if hand_img is None:
+                hand_img = error_panel  # None when no error: dark placeholder
+            display = compose_display(
+                overlay_keypoints(out.frame.color, uv,
+                                  out.detection.visibility,
+                                  out.detection.presence, out.filtered.state),
+                colorize_depth(out.frame.depth),
+                hand_img,
+                _status_lines(out, stats))
+            cv2.imshow(window_name, cv2.cvtColor(display, cv2.COLOR_RGB2BGR))
         if now - last_print >= 2.0:
             last_print = now
             timing = pipeline.timing_ms
@@ -373,8 +401,7 @@ def run_local_viewer(source, detector, retargeter=None, control_hz: float = 60.0
                   f"solve={timing['retarget']:.0f}ms "
                   f"presence={out.detection.presence:.2f} "
                   f"state={out.filtered.state.value}", flush=True)
-        key = cv2.waitKey(1) & 0xFF
-        return key not in (27, ord("q"))  # Esc or q stops
+        return True
 
     try:
         control.run(apply)
