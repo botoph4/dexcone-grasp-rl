@@ -362,7 +362,7 @@ def run_viewers(source, detector, retargeter=None, *,
 
         try:
             cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-        except cv2.error:
+        except cv2.error:  # pylint: disable=catching-non-exception
             # cv2 and the mjpython trampoline both need the Cocoa main
             # thread, so the window cannot open under mjpython -- degrade
             # with a hint instead of crashing the run
