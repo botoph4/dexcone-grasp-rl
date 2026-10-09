@@ -360,7 +360,18 @@ def run_viewers(source, detector, retargeter=None, *,
     if cv2_window:
         import cv2  # noqa: E402
 
-        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+        try:
+            cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+        except cv2.error:
+            # cv2 and the mjpython trampoline both need the Cocoa main
+            # thread, so the window cannot open under mjpython -- degrade
+            # with a hint instead of crashing the run
+            print("[viewer] cv2 窗口无法打开(mjpython 下运行时的常见问题),"
+                  "本次跳过相机窗口。请用普通 python 运行以获得相机窗口:"
+                  "MuJoCo 仿真弹窗会自动改用 mjpython 子进程,无需手动切换。",
+                  flush=True)
+            cv2 = None
+            cv2_window = False
     control = FixedRateControl(pipeline, control_hz=control_hz)
     last_render = 0.0
     last_print = 0.0
