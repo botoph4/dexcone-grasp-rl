@@ -350,7 +350,9 @@ def run_viewers(source, detector, retargeter=None, *,
                   "无法打开 MuJoCo 仿真弹窗", flush=True)
             mujoco_popup = False
         else:
-            popup_proc = subprocess.Popen(
+            # stdin stays open for the whole run (closed in the finally
+            # block), so a `with` context manager is not appropriate here
+            popup_proc = subprocess.Popen(  # pylint: disable=consider-using-with
                 [str(mjpython), str(popup_script)],
                 stdin=subprocess.PIPE, text=True)
     cv2 = None
