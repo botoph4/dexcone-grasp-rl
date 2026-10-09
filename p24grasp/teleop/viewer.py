@@ -352,8 +352,15 @@ def run_mujoco_viewer(source, detector, retargeter=None, control_hz: float = 60.
 
 
 def run_local_viewer(source, detector, retargeter=None, control_hz: float = 60.0) -> None:
-    """cv2 desktop window: 2x2 grid (color+keypoints | depth; P24 | status),
-    driven by a fixed 60 Hz control loop over the pipeline."""
+    """cv2 desktop window: 2x2 grid (color+keypoints | depth; P24 | status).
+
+    Single-threaded: the pipeline and the rendering run in one loop.  The
+    2x2 render holds the GIL, so a producer/consumer split (the fixed-rate
+    control) made BOTH threads crawl (measured ~8 Hz vs 26-90 Hz with this
+    loop); the fixed-rate control remains in the MuJoCo and web viewers,
+    whose consumers are light.  The loop rate is shown as map=ctrl in the
+    status panel.
+    """
     import cv2  # lazy: opencv-contrib-python ships with mediapipe
 
     pipeline = TeleopPipeline(source, detector, retargeter=retargeter)
@@ -364,51 +371,43 @@ def run_local_viewer(source, detector, retargeter=None, control_hz: float = 60.0
         print(f"[viewer] P24 mesh panel disabled: {p24._error}", flush=True)
     window_name = "p24 teleop"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-    control = FixedRateControl(pipeline, control_hz=control_hz)
+    rate = 0.0
     last_print = 0.0
-    last_render = 0.0
-
-    def apply(command: np.ndarray, out, stats: dict) -> bool:
-        nonlocal last_print, last_render
-        key = cv2.waitKey(1) & 0xFF
-        if key in (27, ord("q")):  # Esc or q stops
-            return False
-        now = time.perf_counter()
-        # The 2x2 grid render costs ~30-50 ms (depth colormap + P24 mesh);
-        # rendering on every 60 Hz tick would cap the control loop at the
-        # render rate.  Throttle the display to ~30 Hz -- each render shows
-        # the latest command, so the sim stays on the 60 Hz control tick.
-        if now - last_render >= 1.0 / 30.0:
-            last_render = now
+    try:
+        while True:
+            t0 = time.perf_counter()
+            out = pipeline.step()
+            if out.frame is None:
+                break
             uv = _uv_from_keypoints(out.detection.keypoints3d, out.frame)
-            hand_img = p24.render(command)
+            hand_img = p24.render(out.command)
             if hand_img is None:
                 hand_img = error_panel  # None when no error: dark placeholder
+            stats = {"map_rate": rate, "control_rate": rate,
+                     "control_hz": control_hz}
             display = compose_display(
-                overlay_keypoints(out.frame.color, uv,
-                                  out.detection.visibility,
+                overlay_keypoints(out.frame.color, uv, out.detection.visibility,
                                   out.detection.presence, out.filtered.state),
                 colorize_depth(out.frame.depth),
                 hand_img,
                 _status_lines(out, stats))
             cv2.imshow(window_name, cv2.cvtColor(display, cv2.COLOR_RGB2BGR))
-        if now - last_print >= 2.0:
-            last_print = now
-            timing = pipeline.timing_ms
-            print(f"[teleop] map={stats['map_rate']:.0f}Hz "
-                  f"ctrl={stats['control_rate']:.0f}Hz "
-                  f"read={timing['read']:.0f}ms det={timing['detect']:.0f}ms "
-                  f"solve={timing['retarget']:.0f}ms "
-                  f"presence={out.detection.presence:.2f} "
-                  f"state={out.filtered.state.value}", flush=True)
-        return True
-
-    try:
-        control.run(apply)
+            if cv2.waitKey(1) & 0xFF in (27, ord("q")):  # Esc or q
+                break
+            loop_s = time.perf_counter() - t0
+            rate = 1.0 / loop_s if not rate else 0.9 * rate + 0.1 / loop_s
+            if time.perf_counter() - last_print >= 2.0:
+                last_print = time.perf_counter()
+                timing = pipeline.timing_ms
+                print(f"[teleop] map={rate:.0f}Hz ctrl={rate:.0f}Hz "
+                      f"read={timing['read']:.0f}ms det={timing['detect']:.0f}ms "
+                      f"solve={timing['retarget']:.0f}ms "
+                      f"presence={out.detection.presence:.2f} "
+                      f"state={out.filtered.state.value}", flush=True)
     except KeyboardInterrupt:
         print("\nviewer stopped")
     finally:
-        control.close()
+        pipeline.close()
         cv2.destroyAllWindows()
 
 

@@ -175,8 +175,6 @@ class _TipSpaceRetargeter:
         # the thumb covers it (the keypoints then belong to the thumb)
         self._last_targets: np.ndarray | None = None
         self._last_pip_targets: np.ndarray | None = None
-        # whether _q_prev holds a real solution (False right after reset)
-        self._solved = False
 
     def _chain(self, name):
         """Look up a finger chain of the hand model by name.
@@ -448,7 +446,6 @@ class _TipSpaceRetargeter:
         self._palm_frame = None
         self._last_targets = None
         self._last_pip_targets = None
-        self._solved = False
         self._human_reach = self._human_reach_init
 
 
@@ -733,19 +730,15 @@ class HybridRetargeter(_TipSpaceRetargeter):
             targets[self._chain_names.index("index")]))
         # Warm-start sanity: after an occlusion the stale previous solution
         # can be far from the new targets; start from whichever of the stale
-        # solution and the analytical prior has the lower residual.  A
-        # reset leaves no real solution at all (the zero vector): starting
-        # from it makes dogbox grind against the joint bounds for hundreds
-        # of ms on a near-open hand, so cold starts begin at q0 instead.
-        if self._solved:
-            x0 = self._q_prev.copy()
-            cost_stale = float(np.sum(
-                self._residuals(x0, targets, q0, pinch_human, pip_targets) ** 2))
-            cost_prior = float(np.sum(
-                self._residuals(q0, targets, q0, pinch_human, pip_targets) ** 2))
-            if cost_prior < cost_stale:
-                x0 = q0.copy()
-        else:
+        # solution and the analytical prior has the lower residual.  (A
+        # short-circuit for the post-reset zero vector changed the re-entry
+        # solution for some gestures -- the comparison must always run.)
+        x0 = self._q_prev.copy()
+        cost_stale = float(np.sum(
+            self._residuals(x0, targets, q0, pinch_human, pip_targets) ** 2))
+        cost_prior = float(np.sum(
+            self._residuals(q0, targets, q0, pinch_human, pip_targets) ** 2))
+        if cost_prior < cost_stale:
             x0 = q0.copy()
         # method="dogbox": trf stalls when the warm start sits exactly on a
         # joint bound (the zero pose is the lower bound for 12 of 16 DOFs).
@@ -756,7 +749,6 @@ class HybridRetargeter(_TipSpaceRetargeter):
             jac="2-point", max_nfev=self.max_nfev)
         self._q_prev = np.clip(result.x, self._lb, self._ub)
         self._q20_prev = self._to_urdf_degrees(self._q_prev)
-        self._solved = True
         return self._q20_prev.copy()
 
     def retarget(self, angles: HandAngles,
