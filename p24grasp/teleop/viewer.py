@@ -458,7 +458,6 @@ def run_http_viewer(source, detector, retargeter=None, port: int = 8080) -> None
     render on some macOS/browser combinations).  MJPEG over plain HTTP
     works in every browser with zero client-side complexity.
     """
-    import io
     import threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
