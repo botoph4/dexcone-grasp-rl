@@ -43,6 +43,25 @@ SKELETON_OFFSET = np.array([0.30, 0.0, 0.42])
 SKELETON_SCALE = 0.9
 
 
+def _backdrop_xml() -> str:
+    """A closed white room (six planes, normals facing inward): the popup
+    background reads white from every camera angle inside the room --
+    the GLFW viewer's own clear color is not configurable from Python."""
+    planes = (
+        ("bg_floor", "0 0 -0.2", "0 0 0"),      # normal +z
+        ("bg_ceiling", "0 0 1.2", "180 0 0"),   # normal -z
+        ("bg_back", "1.2 0 0.5", "0 -90 0"),    # normal -x
+        ("bg_front", "-1.2 0 0.5", "0 90 0"),   # normal +x
+        ("bg_right", "0 1.2 0.5", "90 0 0"),    # normal -y
+        ("bg_left", "0 -1.2 0.5", "-90 0 0"),   # normal +y
+    )
+    return "".join(
+        f'<geom name="{name}" type="plane" size="3 3 0.01" pos="{pos}" '
+        f'euler="{euler}" rgba="1 1 1 1" contype="0" conaffinity="0" '
+        f'group="2"/>\n'
+        for name, pos, euler in planes)
+
+
 def _skeleton_geoms_xml() -> str:
     """The 21 joint spheres + 20 bone ellipsoids as worldbody children
     (free geoms: no body, no collisions, visual-only)."""
@@ -61,7 +80,8 @@ def build_model():
     """The P24 hand model + the skeleton geoms; returns
     (model, data, qpos_ids, joint_ids, bone_ids)."""
     text = _with_lights(ensure_hand_xml())
-    text = text.replace("</worldbody>", _skeleton_geoms_xml() + "</worldbody>")
+    text = text.replace("</worldbody>",
+                        _backdrop_xml() + _skeleton_geoms_xml() + "</worldbody>")
     model = mujoco.MjModel.from_xml_string(text)
     data = mujoco.MjData(model)
     qpos_ids = np.array(

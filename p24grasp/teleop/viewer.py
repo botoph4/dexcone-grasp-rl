@@ -7,6 +7,8 @@ state, joint angles and the P24 command.  Run with
 """
 from __future__ import annotations
 
+import io
+import struct
 import subprocess
 import sys
 import time
@@ -355,29 +357,24 @@ def run_viewers(source, detector, retargeter=None, *,
             popup_proc = subprocess.Popen(  # pylint: disable=consider-using-with
                 [str(mjpython), str(popup_script)],
                 stdin=subprocess.PIPE, text=True)
-    cv2 = None
-    window_name = "p24 camera"
+    cam_proc = None
     if cv2_window:
-        import cv2  # noqa: E402
-
-        try:
-            cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-        except cv2.error:  # pylint: disable=catching-non-exception
-            # cv2 and the mjpython trampoline both need the Cocoa main
-            # thread, so the window cannot open under mjpython -- degrade
-            # with a hint instead of crashing the run
-            print("[viewer] cv2 窗口无法打开(mjpython 下运行时的常见问题),"
-                  "本次跳过相机窗口。请用普通 python 运行以获得相机窗口:"
-                  "MuJoCo 仿真弹窗会自动改用 mjpython 子进程,无需手动切换。",
-                  flush=True)
-            cv2 = None
+        cam_script = Path(__file__).resolve().parent.parent.parent \
+            / "scripts" / "camera_viewer.py"
+        if not cam_script.exists():
+            print("[viewer] camera_viewer.py 未找到,跳过相机窗口", flush=True)
             cv2_window = False
+        else:
+            # plain-python child process: cv2 needs the interpreter's main
+            # thread, which the mjpython trampoline owns in this process
+            cam_proc = subprocess.Popen(  # pylint: disable=consider-using-with
+                [sys.executable, str(cam_script)], stdin=subprocess.PIPE)
     control = FixedRateControl(pipeline, control_hz=control_hz)
     last_render = 0.0
     last_print = 0.0
 
     def apply(command: np.ndarray, out, stats: dict) -> bool:
-        nonlocal last_render, last_print, mujoco_popup
+        nonlocal last_render, last_print, mujoco_popup, cv2_window
         if mujoco_popup and popup_proc is not None:
             if popup_proc.poll() is not None:
                 mujoco_popup = False  # the popup window was closed
@@ -395,9 +392,10 @@ def run_viewers(source, detector, retargeter=None, *,
                     popup_proc.stdin.flush()
                 except (BrokenPipeError, OSError):
                     mujoco_popup = False
-        if cv2_window:
-            now = time.perf_counter()
-            if now - last_render >= 1.0 / 15.0:  # ~15 Hz camera window
+        if cv2_window and cam_proc is not None:
+            if cam_proc.poll() is not None:
+                cv2_window = False  # the camera window was closed
+            elif now - last_render >= 1.0 / 15.0:  # ~15 Hz camera window
                 last_render = now
                 uv = _uv_from_keypoints(out.detection.keypoints3d, out.frame)
                 display = compose_camera_display(
@@ -406,9 +404,15 @@ def run_viewers(source, detector, retargeter=None, *,
                                       out.detection.presence, out.filtered.state),
                     colorize_depth(out.frame.depth),
                     _status_lines(out, stats))
-                cv2.imshow(window_name, cv2.cvtColor(display, cv2.COLOR_RGB2BGR))
-                if cv2.waitKey(1) & 0xFF in (27, ord("q")):  # Esc or q
-                    return False
+                buffer = io.BytesIO()
+                Image.fromarray(display).save(buffer, format="JPEG", quality=85)
+                payload = buffer.getvalue()
+                try:
+                    cam_proc.stdin.write(struct.pack(">I", len(payload)))
+                    cam_proc.stdin.write(payload)
+                    cam_proc.stdin.flush()
+                except (BrokenPipeError, OSError):
+                    cv2_window = False
         now = time.perf_counter()
         if now - last_print >= 2.0:
             last_print = now
@@ -436,8 +440,15 @@ def run_viewers(source, detector, retargeter=None, *,
                 popup_proc.wait(timeout=2.0)
             except subprocess.TimeoutExpired:
                 popup_proc.terminate()
-        if cv2 is not None:
-            cv2.destroyAllWindows()
+        if cam_proc is not None:
+            try:
+                cam_proc.stdin.close()
+            except OSError:
+                pass
+            try:
+                cam_proc.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                cam_proc.terminate()
 
 
 def run_http_viewer(source, detector, retargeter=None, port: int = 8080) -> None:

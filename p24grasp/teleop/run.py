@@ -171,9 +171,10 @@ def camera_main(argv: list[str] | None = None) -> int:
                         help="serve the 2x2 teleop grid as an MJPEG page "
                              "(camera+keypoints | depth / P24 | status)")
     parser.add_argument("--local", action="store_true",
-                        help="show the live camera in a local cv2 window "
-                             "(camera+keypoints | depth | status; the sim "
-                             "hand lives in the MuJoCo popup)")
+                        help="show the live camera in its own window "
+                             "(a separate plain-python process streaming "
+                             "the camera+keypoints | depth | status frames; "
+                             "independent of the MuJoCo popup)")
     parser.add_argument("--no-lateral", action="store_true",
                         help="disable the lateral (ab/adduction) mapping: the "
                              "four joint_2 DOFs stay at neutral zero")
