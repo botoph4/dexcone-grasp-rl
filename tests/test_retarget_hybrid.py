@@ -178,11 +178,15 @@ def test_lateral_disabled_holds_j2_at_neutral():
 
 def test_absence_invalidates_stale_target_holds():
     ret = _retargeter()
-    kp = _straight_keypoints()
-    kp[4] = kp[5] + (0.005, 0.0, 0.0)  # thumb tip covers the index MCP
-    ret.retarget(_angles(flexion=40.0), keypoints3d=kp)
+    # establish clean target memories first (a thumb-over frame on an empty
+    # memory holds instead of storing the contaminated targets)
+    clean = _straight_keypoints()
+    ret.retarget(_angles(flexion=40.0), keypoints3d=clean)
     assert ret._last_targets is not None  # pylint: disable=protected-access
     assert ret._last_pip_targets is not None  # pylint: disable=protected-access
+    kp = clean.copy()
+    kp[4] = kp[5] + (0.005, 0.0, 0.0)  # thumb tip covers the index MCP
+    ret.retarget(_angles(flexion=40.0), keypoints3d=kp)  # the hold engages
     # hand leaves the view: the hold memory must be dropped, or the next
     # detection would keep pulling the index toward the stale pre-absence
     # point and twist the mapping
@@ -280,3 +284,15 @@ def test_slow_finger_motion_is_followed():
     kp[8, 2] += 0.0005  # index tip drifts 0.5 mm (slow motion)
     q2 = ret.retarget(_angles(flexion=40.0), keypoints3d=kp)
     assert np.abs(q2 - q1).max() > 0.0  # the finger followed the drift
+
+
+def test_thumb_over_index_on_fresh_start_holds_instead_of_contaminating():
+    # regression: on re-entry the hold memory is empty; storing the
+    # thumb's keypoints as the index target would drag the robot index
+    # after the thumb for the whole occlusion
+    ret = _reset_retargeter()
+    kp = _straight_keypoints()
+    kp[4] = kp[5] + (0.005, 0.0, 0.0)  # thumb tip covers the index MCP
+    q = ret.retarget(_angles(flexion=40.0), keypoints3d=kp)
+    np.testing.assert_allclose(q, 0.0, atol=1e-9)  # held at the reset pose
+    assert ret._last_targets is None  # pylint: disable=protected-access

@@ -175,6 +175,9 @@ class _TipSpaceRetargeter:
         # the thumb covers it (the keypoints then belong to the thumb)
         self._last_targets: np.ndarray | None = None
         self._last_pip_targets: np.ndarray | None = None
+        # consecutive frames with a detected hand but unavailable targets
+        # (diagnostic counter, see retarget())
+        self._hold_frames = 0
 
     def _chain(self, name):
         """Look up a finger chain of the hand model by name.
@@ -228,7 +231,13 @@ class _TipSpaceRetargeter:
                         for name in self._chain_names])
         scale = self._update_scale(rel)
         targets = scale * (frame @ rel.T).T + self.mount_t
-        if thumb_over_finger(keypoints3d, 5) and self._last_targets is not None:
+        if thumb_over_finger(keypoints3d, 5):
+            if self._last_targets is None:
+                # no clean previous value to hold (fresh start / reset):
+                # the index "tip" keypoint belongs to the thumb, and storing
+                # it would drag the robot index after the thumb for as long
+                # as the occlusion lasts -- hold the whole frame instead
+                return None
             index_slot = self._chain_names.index("index")
             targets[index_slot] = self._last_targets[index_slot]
         self._last_targets = targets
@@ -265,7 +274,11 @@ class _TipSpaceRetargeter:
             np.stack([keypoints3d[self.TIP_IDS[name]] - wrist
                       for name in self._chain_names]))
         pip_targets = scale * (frame @ rel.T).T + self.mount_t
-        if thumb_over_finger(keypoints3d, 5) and self._last_pip_targets is not None:
+        if thumb_over_finger(keypoints3d, 5):
+            if self._last_pip_targets is None:
+                # see targets_from_keypoints: no clean hold value on a
+                # fresh start -- hold the whole frame instead
+                return None
             index_slot = self._chain_names.index("index")
             pip_targets[index_slot] = self._last_pip_targets[index_slot]
         self._last_pip_targets = pip_targets
@@ -446,6 +459,7 @@ class _TipSpaceRetargeter:
         self._palm_frame = None
         self._last_targets = None
         self._last_pip_targets = None
+        self._hold_frames = 0
         self._human_reach = self._human_reach_init
 
 
@@ -784,6 +798,21 @@ class HybridRetargeter(_TipSpaceRetargeter):
                 q0[start + 1] = 0.0
         targets = self.targets_from_keypoints(keypoints3d)
         if targets is None:
+            if angles.presence > 0.5:
+                self._hold_frames += 1
+                if self._hold_frames in (30, 300):
+                    # diagnostic for "the hand is back but the mapping holds":
+                    # report which gate keeps the targets unavailable
+                    missing = [i for i in (0, 9, 1, 4, 8, 12, 16, 20)
+                               if keypoints3d is None
+                               or not np.isfinite(keypoints3d[i]).all()]
+                    print(f"[retarget] 目标持续保持 {self._hold_frames} 帧 "
+                          f"(presence={angles.presence:.1f}): "
+                          f"缺失关键点 {missing} 腕部深度正常="
+                          f"{keypoints3d is not None and self._wrist_depth_sane(keypoints3d)}",
+                          flush=True)
+            else:
+                self._hold_frames = 0
             # keypoints lost (hand out of view / depth lifting failed): HOLD
             # the last optimized command.  Do NOT fall back to the joint
             # mapping q0 -- the optimizer's solution and q0 differ (the

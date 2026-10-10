@@ -246,6 +246,15 @@ class OcclusionStateMachine:
         valid = self._dof_valid(angles) & np.isfinite(flat)
         if self.state == State.TRACKING:
             out = self._unflatten(self._one_euro(flat, dt), angles)
+            # Per-DOF visibility hold: hidden DOFs (e.g. the index covered
+            # by the thumb) must hold their previous output instead of
+            # following the contaminated raw angles -- the visibility
+            # damping would otherwise only bite in DEGRADED, coupling the
+            # robot index to the thumb during normal TRACKING.
+            valid_dof = self._dof_valid(angles)
+            held = np.where(valid_dof, self._flatten(out),
+                            self._flatten(self._prev))
+            out = self._unflatten(held, angles)
             # Keep the EMA warm at the current command so a transition into
             # DEGRADED holds from here, not from a stale seed.
             self._ema.seed(self._flatten(out))

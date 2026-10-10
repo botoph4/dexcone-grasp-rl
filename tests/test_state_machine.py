@@ -152,3 +152,18 @@ def test_recovery_allows_partial_visibility():
         angles.flexion_vis[:, 2] = 0.0  # fingertips hidden: still recoverable
         after = sm.update(angles, DT)
     assert after.state == State.TRACKING
+
+
+def test_tracking_holds_hidden_dofs():
+    # regression: TRACKING used to filter every DOF regardless of the
+    # per-DOF visibility, so an index covered by the thumb still followed
+    # the contaminated raw angles and coupled the robot index to the thumb
+    sm = OcclusionStateMachine()
+    _warm(sm, flexion=30.0)
+    angles = _angles(flexion=80.0)
+    angles.flexion_vis[:, 2] = 0.0  # only the DIPs hidden: still TRACKING
+    out = sm.update(angles, DT)
+    assert out.state == State.TRACKING
+    dip = out.angles.flexion[1, 2]
+    assert abs(dip - 30.0) < abs(dip - 80.0)  # the hidden DIP holds
+    assert out.angles.flexion[1, 0] > 30.0  # the visible MCP still tracks
