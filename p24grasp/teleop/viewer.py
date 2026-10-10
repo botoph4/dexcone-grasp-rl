@@ -375,6 +375,7 @@ def run_viewers(source, detector, retargeter=None, *,
 
     def apply(command: np.ndarray, out, stats: dict) -> bool:
         nonlocal last_render, last_print, mujoco_popup, cv2_window
+        now = time.perf_counter()
         if mujoco_popup and popup_proc is not None:
             if popup_proc.poll() is not None:
                 mujoco_popup = False  # the popup window was closed
@@ -413,7 +414,6 @@ def run_viewers(source, detector, retargeter=None, *,
                     cam_proc.stdin.flush()
                 except (BrokenPipeError, OSError):
                     cv2_window = False
-        now = time.perf_counter()
         if now - last_print >= 2.0:
             last_print = now
             timing = pipeline.timing_ms
