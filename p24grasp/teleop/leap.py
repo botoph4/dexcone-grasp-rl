@@ -24,14 +24,22 @@ the joint angles are inter-segment (rotation-invariant) and the palm
 frame is refit from the keypoints, so a desk-mounted Leap needs no
 mount calibration.
 
-Driver requirements (official bindings):
-    pip install leapc-python-bindings   (https://github.com/ultraleap/
-    leapc-python-bindings) + the Gemini Ultraleap Hand Tracking service
-    (https://developer.leapmotion.com/tracking-software-download) with a
-    Leap Motion Controller 2.  Platforms: Windows, Linux x64, Linux ARM
-    (precompiled modules for py3.8-3.11), Darwin (LeapSDK inside the
-    "Ultraleap Hand Tracking" app; older precompiled modules -- build
-    leapc_cffi yourself for newer Python versions).
+Driver requirements (official bindings, NOT on PyPI -- install from
+source, https://github.com/ultraleap/leapc-python-bindings):
+
+    git clone https://github.com/ultraleap/leapc-python-bindings
+    cd leapc-python-bindings
+    pip install -r requirements.txt
+    pip install -e leapc-python-api
+    pip install build cffi && python -m build leapc-cffi
+    pip install leapc-cffi/dist/leapc_cffi-*.tar.gz
+
+plus the Gemini Ultraleap Hand Tracking service
+(https://developer.leapmotion.com/tracking-software-download) with a
+Leap Motion Controller 2.  Platforms: Windows, Linux x64, Linux ARM
+(precompiled modules for py3.8-3.11), Darwin (LeapSDK inside the
+"Ultraleap Hand Tracking" app; build leapc_cffi yourself for newer
+Python versions).
 """
 from __future__ import annotations
 
@@ -153,9 +161,14 @@ class LeapDetector:
             import leap  # noqa: E402
         except ImportError as exc:
             raise RuntimeError(
-                "Leap Motion 驱动不可用: 需要安装官方 Gemini 绑定 "
-                "(pip install leapc-python-bindings) 并运行 Ultraleap "
-                "Hand Tracking 服务;详见 p24grasp/teleop/leap.py 模块说明"
+                "Leap Motion 驱动不可用: 绑定不在 PyPI 上,请从源码安装:\n"
+                "  git clone https://github.com/ultraleap/leapc-python-bindings\n"
+                "  cd leapc-python-bindings && pip install -r requirements.txt\n"
+                "  pip install -e leapc-python-api\n"
+                "  pip install build cffi && python -m build leapc-cffi\n"
+                "  pip install leapc-cffi/dist/leapc_cffi-*.tar.gz\n"
+                "并安装 Gemini 追踪服务(Ultraleap Hand Tracking);详见 "
+                "p24grasp/teleop/leap.py 模块说明"
             ) from exc
         self._leap = leap
         self._state = _LeapState()
