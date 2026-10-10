@@ -572,9 +572,13 @@ class HybridRetargeter(_TipSpaceRetargeter):
         # skip threshold freezes slow motions (a stuck-looking finger).
         # prior_weights: per-joint-class regularization strength (reference
         # workspace configs): {"mcp_flexion": 0.01, "lateral": 0.05,
-        # "distal": 0.01}; thumb priors are zero (the optimizer owns the
-        # thumb).  Lateral carries the strongest prior because an
-        # unconstrained tip objective most often misuses joint_2.
+        # "distal": 0.01, "thumb_flexion": 0.01}; the thumb's tip+PIP
+        # targets underdetermine its 4 DOFs, so a small prior on its
+        # flexion DOFs keeps the natural posture (the unconstrained solver
+        # drives the MP hyperextended and the CMC flat), while the
+        # opposition DOF stays free -- the pinch owns it.  Lateral carries
+        # the strongest prior because an unconstrained tip objective most
+        # often misuses joint_2.
         # reg_weight scales the whole prior block: the reference ratios are
         # preserved, and the global scale compensates for our tip-only
         # objective (their Vector10 also constrains the proximal links).
@@ -589,6 +593,7 @@ class HybridRetargeter(_TipSpaceRetargeter):
             [2.0, 1.0, 1.0, 1.0, 2.0])  # index..thumb chain order (pinch side)
         prior_config = {
             "mcp_flexion": 0.01, "lateral": 0.05, "distal": 0.01,
+            "thumb_flexion": 0.01,
             **(prior_weights or {})}
         self._prior_weights = self._make_prior_weights(prior_config)
         # Guided-gesture calibration takes precedence when present;
@@ -634,12 +639,14 @@ class HybridRetargeter(_TipSpaceRetargeter):
     def _make_prior_weights(self, config: dict) -> np.ndarray:
         """Per-DOF prior weights over the 16 active DOFs (rad scale).
 
-        Thumb DOFs get zero prior (the optimizer owns the thumb); the
+        The thumb's flexion DOFs carry a small prior (its tip+PIP targets
+        underdetermine the 4-DOF chain -- without it the solver drives
+        the MP hyperextended); the thumb opposition DOF and the
         four-finger classes use the reference-workspace strengths.
 
         Args:
-            config: dict with keys "mcp_flexion"/"lateral"/"distal"
-                (per-class prior strengths).
+            config: dict with keys "mcp_flexion"/"lateral"/"distal"/
+                "thumb_flexion" (per-class prior strengths).
 
         Returns:
             (16,) prior-weight array in ACTIVE order.
@@ -650,7 +657,12 @@ class HybridRetargeter(_TipSpaceRetargeter):
             start, _ = self.hand.chain_slices[name]
             for offset, joint in enumerate(chain.active_joint_names):
                 if joint.startswith("thumb_"):
-                    weights[start + offset] = 0.0
+                    # thumb flexion DOFs get a small prior (see the class
+                    # docstring); the opposition DOF (joint_3) stays free
+                    if joint.endswith("_joint_3"):
+                        weights[start + offset] = 0.0
+                    else:
+                        weights[start + offset] = config["thumb_flexion"]
                 elif joint.endswith("_joint_1"):
                     weights[start + offset] = config["mcp_flexion"]
                 elif joint.endswith("_joint_2"):

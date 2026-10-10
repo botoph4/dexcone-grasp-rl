@@ -296,3 +296,26 @@ def test_thumb_over_index_on_fresh_start_holds_instead_of_contaminating():
     q = ret.retarget(_angles(flexion=40.0), keypoints3d=kp)
     np.testing.assert_allclose(q, 0.0, atol=1e-9)  # held at the reset pose
     assert ret._last_targets is None  # pylint: disable=protected-access
+
+
+def test_thumb_flexion_maps_naturally():
+    # regression: the unconstrained thumb solver drove the MP joint
+    # hyperextended (negative) while the CMC stayed flat; the small
+    # flexion prior anchors the natural posture
+    from p24grasp.teleop.angles import angles_from_keypoints  # noqa: E402
+    from p24grasp.teleop.detector import HandDetection  # noqa: E402
+
+    ret = _reset_retargeter()
+    kp = _straight_keypoints()
+    for _ in range(20):
+        ret.retarget(_angles(flexion=0.0), keypoints3d=kp)
+    bent = kp.copy()
+    bent[3] = kp[2] + (0.0, 0.05, 0.0)  # the thumb MP bends toward the palm
+    bent[4] = bent[3] + (0.0, 0.02, -0.04)  # and the IP bends on top of it
+    ang = angles_from_keypoints(HandDetection(
+        keypoints3d=bent, visibility=np.ones(21), presence=1.0))
+    for _ in range(10):
+        q = ret.retarget(ang, keypoints3d=bent)
+    assert q[1] > 15.0  # thumb MP (j2) follows the measured bend
+    assert q[3] > 10.0  # thumb IP (j4) follows the measured bend
+    assert q[1] >= -2.0  # no hyperextension
