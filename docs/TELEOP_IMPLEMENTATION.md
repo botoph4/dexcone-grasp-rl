@@ -214,3 +214,32 @@ dex 适配器、相机(回放往返)。CI 跑 pylint(10/10)。
 
 真机验证要点:启动后开掌 1 秒(侧摆标定)→ 任意滚动角下张开/弯曲/对捏;
 手移出画面再返回,映射保持稳定。
+
+## 8. Leap Motion(Gemini)后端
+
+**方案**([leap.py](../p24grasp/teleop/leap.py)):Ultraleap Gemini 追踪服务输出
+26 骨骼手模型(五指 × 掌骨/近节/中节/远节 + 掌骨 + 前臂骨),**骨骼端点即关节
+位置**(`Bone.prev_joint`/`next_joint`),27 关节骨架直接映射到管线的
+MediaPipe 式 21 关键点布局:
+
+- 腕(0)= 前臂骨远端点;拇指(1-4)= 掌骨近端(CMC)/远端(MP)/近节远端(IP)/远节远端(TIP);
+- 四指(5-8/9-12/13-16/17-20)= 掌骨远端(MCP)/近节远端(PIP)/中节远端(DIP)/远节远端(TIP)。
+
+坐标系转换:Leap 系(x 右,y 上,z 朝用户)→ 管线相机系(x 右,y 下,z 前)取
+`(x, -y, -z)`;下游全部与来源无关(关节角为旋转不变的段间角、掌平面由
+关键点重拟合),桌面摆放的 Leap 无需安装标定。`LeapSource` 按追踪事件
+(~90-120 Hz)产出黑底占位帧(深度全 NaN),`LeapDetector` 把最新事件转成
+`HandDetection`(绑定不暴露逐关节置信度,可见度全 1,遮挡状态机依靠
+角度有限性检查)。
+
+**驱动**:官方绑定 `leapc-python-bindings`(`import leap`,Listener 回调
+`on_tracking_event`) + Gemini 追踪服务;平台覆盖 Windows / Linux x64 /
+**Linux ARM**(py3.8-3.11 预编译,即部署板)/ Darwin(预编译仅旧版
+Python,新版需自行编译 `leapc_cffi`)。
+
+**使用**:
+
+```bash
+python scripts/teleop_camera.py --camera leap --mujoco-view --no-lateral
+# 与 RGB-D 相机共用全部管线:标定(--calibrate)、视图器、5 种重定向后端
+```

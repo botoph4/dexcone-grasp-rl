@@ -119,8 +119,10 @@ CSV_HEADER = ["ts", "state", "thumb_cmc", "thumb_mp", "index_mcp", "index_pip",
               "index_dip", "middle_pip", *[f"q{i}" for i in range(20)]]
 
 
-def _run(source, args: argparse.Namespace, csv_row) -> int:
-    detector = HandDetector(model_path=args.model)
+def _run(source, args: argparse.Namespace, csv_row,
+         detector: HandDetector | None = None) -> int:
+    if detector is None:
+        detector = HandDetector(model_path=args.model)
     retargeter = make_retargeter(args.retarget, args.calibration,
                                  lateral_enabled=not args.no_lateral)
     pipeline = TeleopPipeline(source, detector, retargeter=retargeter)
@@ -161,9 +163,11 @@ def replay_main(argv: list[str] | None = None) -> int:
 def camera_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Live teleop from a RealSense D405 "
                                                  "or Orbbec Gemini 305")
-    parser.add_argument("--camera", choices=("auto", "realsense", "orbbec"),
+    parser.add_argument("--camera", choices=("auto", "realsense", "orbbec", "leap"),
                         default="auto",
-                        help="RGB-D backend (default: auto-detect)")
+                        help="hand-tracking backend: realsense/orbbec RGB-D "
+                             "cameras (auto-detect) or leap (Leap Motion "
+                             "Controller 2 with the Ultraleap Gemini service)")
     parser.add_argument("--probe", action="store_true",
                         help="run step-by-step camera bring-up diagnostics and exit "
                              "(orbbec only)")
@@ -211,18 +215,30 @@ def camera_main(argv: list[str] | None = None) -> int:
                                      args.frame_sync, args.align)
         args.camera = "orbbec" if isinstance(source, OrbbecSource) else "realsense"
         width = source.width
+        detector = None
+    elif args.camera == "leap":
+        from p24grasp.teleop.leap import (  # noqa: E402
+            LeapDetector,
+            LeapSource,
+        )
+
+        detector = LeapDetector()
+        source = LeapSource(detector, width=args.width or 640, height=args.height)
+        width = source.width
     else:
         width = args.width if args.width else (848 if args.camera == "orbbec" else 640)
         source = make_camera_source(args.camera, width, args.height, args.fps,
                                     frame_sync=args.frame_sync, align=args.align)
         source.start()
+        detector = None
     if args.calibrate:
         from p24grasp.teleop.calibration import (  # noqa: E402
             DEFAULT_PATH,
             GuidedCalibration,
         )
 
-        detector = HandDetector(model_path=args.model)
+        if detector is None:
+            detector = HandDetector(model_path=args.model)
         try:
             GuidedCalibration(source, detector,
                               path=args.calibration or DEFAULT_PATH).run()
@@ -246,7 +262,8 @@ def camera_main(argv: list[str] | None = None) -> int:
 
         retargeter = make_retargeter(args.retarget, args.calibration,
                                      lateral_enabled=not args.no_lateral)
-        detector = HandDetector(model_path=args.model)
+        if detector is None:
+            detector = HandDetector(model_path=args.model)
         try:
             if args.mujoco_view and not args.local:
                 run_mujoco_viewer(source, detector, retargeter=retargeter)
