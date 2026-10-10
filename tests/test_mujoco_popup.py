@@ -37,3 +37,15 @@ def test_apply_frame_updates_robot_and_skeleton():
     assert model.geom_rgba[bone_ids[5], 3] > 0.0
     np.testing.assert_allclose(model.geom_size[bone_ids[5], 2],
                                0.5 * 0.9 * 0.04, atol=1e-6)
+
+
+def test_configure_camera_frames_the_hand():
+    from mujoco_popup import configure_camera
+
+    import mujoco
+
+    cam = mujoco.MjvCamera()
+    configure_camera(cam)
+    # the default free camera distance (4.5 m) left the hand invisible
+    assert cam.distance < 1.0
+    assert abs(cam.lookat[2] - 0.13) < 1e-6

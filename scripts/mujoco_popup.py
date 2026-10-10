@@ -151,9 +151,26 @@ def apply_frame(model, data, *, qpos_ids, joint_ids, bone_ids,
         model.geom_rgba[bone_ids[bone], 3] = 0.0
 
 
+def configure_camera(cam) -> None:
+    """Frame the hand in the popup.
+
+    The default free camera sits 4.5 m out (lookat z=0.5), where the
+    ~22 cm hand fills about 5% of the view and the mapped finger motion
+    is effectively invisible -- this was read as "the sim does not
+    display the angles".  The hand geometry (zero pose) spans
+    z ~0.0-0.23 m with the fingers fanned in y, so a 3/4 view from
+    ~0.4 m shows the fan and the flexion plane together.
+    """
+    cam.lookat[:] = (0.01, 0.02, 0.13)
+    cam.distance = 0.40
+    cam.azimuth = 60.0
+    cam.elevation = -25.0
+
+
 def main() -> int:
     model, data, qpos_ids, joint_ids, bone_ids = build_model()
     viewer = mujoco.viewer.launch_passive(model, data)
+    configure_camera(viewer.cam)
     try:
         for line in sys.stdin:
             try:
