@@ -40,6 +40,12 @@ Leap Motion Controller 2.  Platforms: Windows, Linux x64, Linux ARM
 (precompiled modules for py3.8-3.11), Darwin (LeapSDK inside the
 "Ultraleap Hand Tracking" app; build leapc_cffi yourself for newer
 Python versions).
+
+Operational note: QUIT the "Ultraleap Hand Tracking" app before running
+the teleop -- while the app is open it claims the device exclusively and
+other clients receive tracking frames WITHOUT hand data (and their
+device open blocks indefinitely).  The tracking service itself keeps
+running in the background, so the teleop works with the app closed.
 """
 from __future__ import annotations
 
