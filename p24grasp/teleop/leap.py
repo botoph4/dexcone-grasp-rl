@@ -173,7 +173,24 @@ class LeapDetector:
         self._leap = leap
         self._state = _LeapState()
         self._connection = leap.Connection()
-        self._connection.add_listener(self._Listener(self._state))
+        # the listener must subclass leap.Listener: the connection's
+        # dispatch calls on_event(), which the base class routes to the
+        # per-event handlers (a plain class raises AttributeError on
+        # every event)
+        state = self._state
+
+        class _LeapListener(leap.Listener):
+            """Feeds the shared state from the service thread."""
+
+            def on_tracking_event(self, event) -> None:
+                with state._lock:
+                    state.latest = event
+                    state.frame_id += 1
+                    state.last_ts = time.perf_counter()
+                state._event.set()
+
+        self._listener = _LeapListener()
+        self._connection.add_listener(self._listener)
         # keep the connection open for the process lifetime (the binding
         # returns a context manager; enter it explicitly)
         self._open = self._connection.open()
@@ -182,19 +199,6 @@ class LeapDetector:
         mode = getattr(leap.TrackingMode, tracking_mode, None)
         if mode is not None:
             self._connection.set_tracking_mode(mode)
-
-    class _Listener:
-        """Feeds the shared state from the service thread."""
-
-        def __init__(self, state: "_LeapState") -> None:
-            self._state = state
-
-        def on_tracking_event(self, event) -> None:
-            with self._state._lock:
-                self._state.latest = event
-                self._state.frame_id += 1
-                self._state.last_ts = time.perf_counter()
-            self._state._event.set()
 
     def detect(self, frame: Frame) -> HandDetection:
         """Return the latest hand as a 21-keypoint detection.
@@ -232,7 +236,7 @@ class LeapDetector:
             if hasattr(self, "_open") and self._open is not None \
                     and hasattr(self._open, "__exit__"):
                 self._open.__exit__(None, None, None)
-            connection.remove_listener(self._Listener(self._state))
+            connection.remove_listener(self._listener)
         except Exception:  # pylint: disable=broad-exception-caught
             pass
 

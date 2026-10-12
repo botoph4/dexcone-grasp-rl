@@ -114,10 +114,19 @@ class _FakeOpen:
         return False
 
 
+class _FakeListenerBase:
+    """Minimal stand-in for leap.Listener (the connection dispatches via
+    on_event; the detector subclass overrides on_tracking_event)."""
+
+    def on_event(self, event):
+        pass
+
+
 def _install_fake_leap():
     fake = types.ModuleType("leap")
     fake.Connection = _FakeConnection
     fake.TrackingMode = type("TrackingMode", (), {"Desktop": "desktop"})
+    fake.Listener = _FakeListenerBase
     sys.modules["leap"] = fake
     return fake
 
