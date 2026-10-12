@@ -43,10 +43,10 @@ Python versions).
 
 Operational note: KEEP the "Ultraleap Hand Tracking" app RUNNING (it can
 be minimized) while teleoperating.  On macOS the app hosts the tracking
-service: while it runs, clients receive the tracking stream at the
-camera's frame rate (the app holds the device, which is fine -- the
-stream is shared); once the app quits, the service stops streaming
-entirely and no client receives frames.
+service: while it runs, the detector opens the device and subscribes to
+its events (a second client opening the device is allowed), and hand
+data flows at the camera's frame rate; once the app quits, the service
+stops streaming entirely and no client receives frames.
 """
 from __future__ import annotations
 
@@ -185,16 +185,31 @@ class LeapDetector:
         # per-event handlers (a plain class raises AttributeError on
         # every event)
         state = self._state
+        connection = self._connection
 
         class _LeapListener(leap.Listener):
             """Feeds the shared state from the service thread.
 
-            NOTE: do NOT open/claim the device here.  On macOS the
-            tracking service is launched by the Ultraleap app and only
-            streams while the app runs (the app holds the device); a
-            second client claiming the device blocks indefinitely in
-            LeapOpenDevice and freezes the listener thread.
+            Opens the device and SUBSCRIBES to its events: without the
+            subscription the service delivers tracking frames with
+            nHands = 0 (the hand payloads go to subscribed clients only
+            -- measured: 2223 frames / 2093 with hands after
+            subscribing).  The app must be running (it hosts the
+            service on macOS); a second client opening the device is
+            allowed while it runs.
             """
+
+            def __init__(self) -> None:
+                self._device_open = None
+
+            def on_device_event(self, event) -> None:
+                try:
+                    self._device_open = event.device.open()
+                    if hasattr(self._device_open, "__enter__"):
+                        self._device_open.__enter__()
+                    connection.subscribe_events(event.device)
+                except Exception:  # pylint: disable=broad-exception-caught
+                    pass  # app closed / device held elsewhere
 
             def on_tracking_event(self, event) -> None:
                 with state._lock:
@@ -247,10 +262,14 @@ class LeapDetector:
         if connection is None:
             return
         try:
+            listener = getattr(self, "_listener", None)
+            device_open = getattr(listener, "_device_open", None)
+            if device_open is not None and hasattr(device_open, "__exit__"):
+                device_open.__exit__(None, None, None)
             if hasattr(self, "_open") and self._open is not None \
                     and hasattr(self._open, "__exit__"):
                 self._open.__exit__(None, None, None)
-            connection.remove_listener(self._listener)
+            connection.remove_listener(listener)
         except Exception:  # pylint: disable=broad-exception-caught
             pass
 

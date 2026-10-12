@@ -92,6 +92,7 @@ class _FakeConnection:
     def __init__(self):
         self.listeners = []
         self.mode = None
+        self.subscribed_devices = []
 
     def add_listener(self, listener):
         self.listeners.append(listener)
@@ -105,12 +106,19 @@ class _FakeConnection:
     def set_tracking_mode(self, mode):
         self.mode = mode
 
+    def subscribe_events(self, device):
+        self.subscribed_devices.append(device)
+
 
 class _FakeOpen:
+    def __init__(self):
+        self._closed = False
+
     def __enter__(self):
         return self
 
     def __exit__(self, *args):
+        self._closed = True
         return False
 
 
@@ -166,3 +174,18 @@ def test_source_returns_stub_frames_per_event():
     assert np.isnan(frame.depth).all()
     assert frame.ts > 0.0
     source.close()
+
+
+def test_detector_opens_and_subscribes_to_the_device():
+    # regression: without the subscription the service delivers tracking
+    # frames with nHands = 0
+    _install_fake_leap()
+    detector = LeapDetector()
+    connection = detector._connection  # pylint: disable=protected-access
+    listener = connection.listeners[0]
+    device = types.SimpleNamespace(open=lambda: _FakeOpen())
+    listener.on_device_event(types.SimpleNamespace(device=device))
+    assert connection.subscribed_devices == [device]
+    assert listener._device_open is not None  # pylint: disable=protected-access
+    detector.close()
+    assert listener._device_open._closed  # pylint: disable=protected-access
