@@ -150,6 +150,7 @@ class _LeapState:
         self.latest = None  # the latest tracking event
         self.frame_id = 0
         self.last_ts = time.perf_counter()
+        self.hands_seen = False
 
 
 class LeapDetector:
@@ -208,14 +209,24 @@ class LeapDetector:
                     if hasattr(self._device_open, "__enter__"):
                         self._device_open.__enter__()
                     connection.subscribe_events(event.device)
-                except Exception:  # pylint: disable=broad-exception-caught
-                    pass  # app closed / device held elsewhere
+                    print("[leap] device opened + events subscribed", flush=True)
+                except Exception as exc:  # pylint: disable=broad-exception-caught
+                    print(f"[leap] device open/subscribe failed: {exc}", flush=True)
 
             def on_tracking_event(self, event) -> None:
                 with state._lock:
+                    had_hands = state.hands_seen
+                    hands = getattr(event, "hands", None)
+                    state.hands_seen = bool(hands)
                     state.latest = event
                     state.frame_id += 1
                     state.last_ts = time.perf_counter()
+                    if state.hands_seen and not had_hands:
+                        hand = hands[0]
+                        print(f"[leap] hand detected: id={hand.id} "
+                              f"type={hand.type}", flush=True)
+                    elif not state.hands_seen and had_hands:
+                        print("[leap] hand lost", flush=True)
                 state._event.set()
 
         self._listener = _LeapListener()
