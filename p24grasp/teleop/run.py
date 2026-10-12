@@ -63,13 +63,20 @@ def _auto_detect_source(width: int, height: int, fps: int,
     raise RuntimeError("no RGB-D camera detected: " + " | ".join(errors) + hint)
 
 
-def make_retargeter(kind: str, hand_calibration_path=None, lateral_enabled=True):
-    """Factory for the retargeting backends."""
+def make_retargeter(kind: str, hand_calibration_path=None, lateral_enabled=True,
+                    wrist_sanity_m: float | None = 0.10):
+    """Factory for the retargeting backends.
+
+    wrist_sanity_m: the hybrid's wrist-to-palm trust bound (None
+    disables -- the leap wrist comes from the arm bone, farther than the
+    wrist-mounted RGB-D camera's and free of depth glitches).
+    """
     if kind == "hybrid":
         from p24grasp.teleop.retarget import HybridRetargeter  # noqa: E402
 
         return HybridRetargeter(hand_calibration_path=hand_calibration_path,
-                                lateral_enabled=lateral_enabled)
+                                lateral_enabled=lateral_enabled,
+                                wrist_sanity_m=wrist_sanity_m)
     if kind == "fingertip":
         from p24grasp.teleop.retarget import FingertipRetargeter  # noqa: E402
 
@@ -123,8 +130,12 @@ def _run(source, args: argparse.Namespace, csv_row,
          detector=None) -> int:
     if detector is None:
         detector = HandDetector(model_path=args.model)
+    # the leap wrist comes from the arm bone (farther than the wrist-
+    # mounted camera's, no depth glitches): skip the wrist sanity bound
+    wrist_sanity_m = None if getattr(args, "camera", None) == "leap" else 0.10
     retargeter = make_retargeter(args.retarget, args.calibration,
-                                 lateral_enabled=not args.no_lateral)
+                                 lateral_enabled=not args.no_lateral,
+                                 wrist_sanity_m=wrist_sanity_m)
     pipeline = TeleopPipeline(source, detector, retargeter=retargeter)
     frames = 0
     try:
@@ -238,6 +249,9 @@ def camera_main(argv: list[str] | None = None) -> int:
                                     frame_sync=args.frame_sync, align=args.align)
         source.start()
         detector = None
+    # the leap wrist comes from the arm bone (farther than the wrist-
+    # mounted camera's, no depth glitches): skip the wrist sanity bound
+    wrist_sanity_m = None if args.camera == "leap" else 0.10
     if args.calibrate:
         from p24grasp.teleop.calibration import (  # noqa: E402
             DEFAULT_PATH,
@@ -268,7 +282,8 @@ def camera_main(argv: list[str] | None = None) -> int:
         )
 
         retargeter = make_retargeter(args.retarget, args.calibration,
-                                     lateral_enabled=not args.no_lateral)
+                                     lateral_enabled=not args.no_lateral,
+                                     wrist_sanity_m=wrist_sanity_m)
         if detector is None:
             detector = HandDetector(model_path=args.model)
         try:

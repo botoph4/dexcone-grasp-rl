@@ -113,6 +113,45 @@ def scaling_q16(hand, angles: HandAngles,
     return out
 
 
+_WRIST_SANITY_REPORTED = False
+
+
+def _wrist_depth_sane(keypoints3d: np.ndarray, max_distance_m: float) -> bool:
+    """Whether the wrist keypoint agrees with the palm keypoints.
+
+    During hand (re-)entry the wrist often sits at the frame edge,
+    where its depth window samples the background: the wrist point is
+    then lifted far behind the palm, and EVERY wrist-relative tip
+    vector is inflated uniformly -- the median cannot reject it, the
+    monotonic reach max absorbs it, and the reach scale clips to its
+    lower bound, curling the robot into a fist for minutes.  Frames
+    with a glitched wrist must hold instead of updating targets/scale.
+
+    Args:
+        keypoints3d: (21, 3) camera-frame keypoints.
+        max_distance_m: the orientation-independent wrist-to-palm bound.
+
+    Returns:
+        True when the wrist lies within ``max_distance_m`` of the median
+        MCP position.
+    """
+    kp = np.asarray(keypoints3d, dtype=np.float64)
+    wrist = kp[0]
+    mcp = kp[[1, 5, 9, 13, 17]]
+    mcp = mcp[np.isfinite(mcp).all(axis=1)]
+    if not np.isfinite(wrist).all() or mcp.shape[0] < 3:
+        return False
+    distance = float(np.linalg.norm(wrist - np.median(mcp, axis=0)))
+    global _WRIST_SANITY_REPORTED  # pylint: disable=global-statement
+    if distance >= max_distance_m and not _WRIST_SANITY_REPORTED:
+        _WRIST_SANITY_REPORTED = True
+        print(f"[retarget] 腕部合理性拒绝: 腕-掌距 {distance * 1000:.0f} mm "
+              f"> {max_distance_m * 1000:.0f} mm,指尖目标持续保持"
+              f"(Leap 路径常见:腕点来自手臂骨,比腕装 RGB-D 相机远;"
+              f"可用 wrist_sanity_m=None 关闭)", flush=True)
+    return distance < max_distance_m
+
+
 class _TipSpaceRetargeter:
     """Shared scaffolding: HandModel, chain order, joint bounds, adaptive
     reach scale, and the URDF<->active DOF conversions.
@@ -132,7 +171,8 @@ class _TipSpaceRetargeter:
     # chain contributes the active (MCP, abd, PIP) = URDF indices 0, 1, 2.
     FINGER_ACTIVE_TO_URDF = (0, 1, 2)
 
-    def __init__(self, scale: float | None = None, max_nfev: int = 200):
+    def __init__(self, scale: float | None = None, max_nfev: int = 200,
+                 wrist_sanity_m: float | None = 0.10):
         """Shared solver scaffolding.
 
         Args:
@@ -141,7 +181,13 @@ class _TipSpaceRetargeter:
                 leaves the targets short of the robot tips, so straight
                 human fingers curl the robot hand).
             max_nfev: scipy ``least_squares`` evaluation budget per solve.
+            wrist_sanity_m: maximum wrist-to-palm distance for trusting
+                the wrist keypoint (None disables the check -- the leap
+                wrist comes from the arm bone and can be farther than
+                the wrist-mounted RGB-D camera's, with no depth glitches
+                to guard against).
         """
+        self.wrist_sanity_m = wrist_sanity_m
         from p24grasp.model.urdf import HandModel  # noqa: E402
         from p24grasp.paths import urdf_path  # noqa: E402
 
@@ -218,7 +264,7 @@ class _TipSpaceRetargeter:
             self._last_targets = None
             self._last_pip_targets = None
             return None
-        if not self._wrist_depth_sane(keypoints3d):
+        if not self._wrist_sane(keypoints3d):
             self._last_targets = None
             self._last_pip_targets = None
             return None
@@ -253,7 +299,7 @@ class _TipSpaceRetargeter:
             self._last_targets = None
             self._last_pip_targets = None
             return None
-        if not self._wrist_depth_sane(keypoints3d):
+        if not self._wrist_sane(keypoints3d):
             self._last_targets = None
             self._last_pip_targets = None
             return None
@@ -344,30 +390,13 @@ class _TipSpaceRetargeter:
 
     @staticmethod
     def _wrist_depth_sane(keypoints3d: np.ndarray) -> bool:
-        """Whether the wrist keypoint agrees with the palm keypoints.
+        return _wrist_depth_sane(keypoints3d, 0.10)
 
-        During hand (re-)entry the wrist often sits at the frame edge,
-        where its depth window samples the background: the wrist point is
-        then lifted far behind the palm, and EVERY wrist-relative tip
-        vector is inflated uniformly -- the median cannot reject it, the
-        monotonic reach max absorbs it, and the reach scale clips to its
-        lower bound, curling the robot into a fist for minutes.  Frames
-        with a glitched wrist must hold instead of updating targets/scale.
-
-        Args:
-            keypoints3d: (21, 3) camera-frame keypoints.
-
-        Returns:
-            True when the wrist lies within 0.10 m of the median MCP
-            position (orientation-independent sanity bound).
-        """
-        kp = np.asarray(keypoints3d, dtype=np.float64)
-        wrist = kp[0]
-        mcp = kp[[1, 5, 9, 13, 17]]
-        mcp = mcp[np.isfinite(mcp).all(axis=1)]
-        if not np.isfinite(wrist).all() or mcp.shape[0] < 3:
-            return False
-        return bool(np.linalg.norm(wrist - np.median(mcp, axis=0)) < 0.10)
+    def _wrist_sane(self, keypoints3d: np.ndarray) -> bool:
+        """The per-instance wrist check (see ``wrist_sanity_m``)."""
+        if self.wrist_sanity_m is None:
+            return True
+        return _wrist_depth_sane(keypoints3d, self.wrist_sanity_m)
 
     def _tips(self, q16: np.ndarray) -> np.ndarray:
         """(5, 3) robot fingertip positions at q16 (chain order).
@@ -550,7 +579,8 @@ class HybridRetargeter(_TipSpaceRetargeter):
                  prior_weights: dict | None = None,
                  lateral_calibration_path: str | Path | None = None,
                  hand_calibration_path: str | Path | None = None,
-                 lateral_enabled: bool = True):
+                 lateral_enabled: bool = True,
+                 wrist_sanity_m: float | None = 0.10):
         # max_nfev=200 covers hard cold starts; with the cold start at q0
         # (see solve()) typical solves converge in a single iteration.
         # NOTE: do NOT skip solves on "unchanged" targets -- a slowly
@@ -564,7 +594,8 @@ class HybridRetargeter(_TipSpaceRetargeter):
         # reg_weight scales the whole prior block: the reference ratios are
         # preserved, and the global scale compensates for our tip-only
         # objective (their Vector10 also constrains the proximal links).
-        super().__init__(scale=scale, max_nfev=max_nfev)
+        super().__init__(scale=scale, max_nfev=max_nfev,
+                         wrist_sanity_m=wrist_sanity_m)
         self.tip_weight = tip_weight
         self.pinch_weight = pinch_weight
         self.reg_weight = reg_weight
