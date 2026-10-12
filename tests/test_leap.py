@@ -54,6 +54,7 @@ class _Hand:
 
     def __init__(self):
         self.type = "HandType.Right"
+        self.id = 130
         self.arm = _Bone(_V(0.0, 0.16, 0.0), _V(0.0, 0.20, 0.0))  # -> wrist
         thumb = [_V(0.03, 0.20, 0.02), _V(0.03, 0.23, 0.0), _V(0.04, 0.26, 0.0),
                  _V(0.05, 0.28, 0.0), _V(0.05, 0.30, 0.0)]
