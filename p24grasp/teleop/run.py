@@ -120,7 +120,7 @@ CSV_HEADER = ["ts", "state", "thumb_cmc", "thumb_mp", "index_mcp", "index_pip",
 
 
 def _run(source, args: argparse.Namespace, csv_row,
-         detector: HandDetector | None = None) -> int:
+         detector=None) -> int:
     if detector is None:
         detector = HandDetector(model_path=args.model)
     retargeter = make_retargeter(args.retarget, args.calibration,
@@ -253,7 +253,7 @@ def camera_main(argv: list[str] | None = None) -> int:
         return 0
     print(f"[{args.camera}] camera started ({width}x{args.height}@{args.fps}), "
           "waiting for frames...", flush=True)
-    if args.view or args.local:
+    if args.view or args.local or args.mujoco_view:
         from p24grasp.teleop.viewer import (  # noqa: E402
             run_http_viewer,
             run_local_viewer,
@@ -285,21 +285,22 @@ def camera_main(argv: list[str] | None = None) -> int:
             record_frames(source, args.record_dir, args.record_frames)
             print(f"recorded {args.record_frames} frames to {args.record_dir}")
             return 0
-        _run_with_csv(source, args)
+        _run_with_csv(source, args, detector)
     finally:
         source.close()
     return 0
 
 
-def _run_with_csv(source, args: argparse.Namespace) -> None:
+def _run_with_csv(source, args: argparse.Namespace,
+                  detector=None) -> None:
     """Run the pipeline, appending to CSV when --csv was given."""
     if args.csv:
         with open(args.csv, "a", newline="", encoding="utf-8") as file:
             writer = csv.writer(file)
             writer.writerow(CSV_HEADER)
-            _run(source, args, writer.writerow)
+            _run(source, args, writer.writerow, detector)
     else:
-        _run(source, args, None)
+        _run(source, args, None, detector)
 
 
 def record_main(argv: list[str] | None = None) -> int:
