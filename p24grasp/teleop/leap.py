@@ -41,11 +41,12 @@ Leap Motion Controller 2.  Platforms: Windows, Linux x64, Linux ARM
 "Ultraleap Hand Tracking" app; build leapc_cffi yourself for newer
 Python versions).
 
-Operational note: QUIT the "Ultraleap Hand Tracking" app before running
-the teleop -- while the app is open it claims the device exclusively and
-other clients receive tracking frames WITHOUT hand data (and their
-device open blocks indefinitely).  The tracking service itself keeps
-running in the background, so the teleop works with the app closed.
+Operational note: KEEP the "Ultraleap Hand Tracking" app RUNNING (it can
+be minimized) while teleoperating.  On macOS the app hosts the tracking
+service: while it runs, clients receive the tracking stream at the
+camera's frame rate (the app holds the device, which is fine -- the
+stream is shared); once the app quits, the service stops streaming
+entirely and no client receives frames.
 """
 from __future__ import annotations
 
@@ -186,7 +187,14 @@ class LeapDetector:
         state = self._state
 
         class _LeapListener(leap.Listener):
-            """Feeds the shared state from the service thread."""
+            """Feeds the shared state from the service thread.
+
+            NOTE: do NOT open/claim the device here.  On macOS the
+            tracking service is launched by the Ultraleap app and only
+            streams while the app runs (the app holds the device); a
+            second client claiming the device blocks indefinitely in
+            LeapOpenDevice and freezes the listener thread.
+            """
 
             def on_tracking_event(self, event) -> None:
                 with state._lock:
