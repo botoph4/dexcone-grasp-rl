@@ -23,4 +23,3 @@ MUJOCO_LOG.TXT
 Log/
 
 # local dependency clones
-thirdparty/
