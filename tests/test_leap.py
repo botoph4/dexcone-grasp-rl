@@ -237,5 +237,5 @@ def test_direct_angles_palm_away_guard_zeroes_flexion():
     hand.digits[1] = _digit([
         _V(0.0, 0.20, 0.0), _V(0.0, 0.24, 0.0), _V(0.0, 0.28, 0.0),
         _V(0.0, 0.28, 0.02), _V(0.0, 0.28, 0.04)])
-    angles = direct_angles_from_hand(hand)
+    angles = direct_angles_from_hand(hand, palm_guard=True)
     assert angles.flexion[1, 1] == 0.0

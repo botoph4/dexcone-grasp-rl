@@ -156,7 +156,7 @@ def _angle_deg(first: Optional[np.ndarray], second: Optional[np.ndarray]) -> flo
     return float(np.degrees(np.arccos(cosine)))
 
 
-def direct_angles_from_hand(hand) -> HandAngles:
+def direct_angles_from_hand(hand, palm_guard: bool = False) -> HandAngles:
     """Direct joint angles from the Gemini bones, ported from the
     leap_motion_sync_with_ffh scheme (lpV2SyncFfh::calPubFingerAngle).
 
@@ -174,14 +174,17 @@ def direct_angles_from_hand(hand) -> HandAngles:
                 and the proximal phalanx (calFingerAdduction: both
                 directions are projected onto the palm plane first).
 
-    The reference's palm guards are kept: a bone pointing away from the
-    palm (dot with the palm normal < 0) zeroes its flexion -- fingers
-    turned away from the palm read as straight instead of bent.
-
     Args:
         hand: a leap hand object (digits with bones(), prev_joint/
             next_joint); the palm normal is fitted from the converted
             keypoints (the Python binding does not expose palm.normal).
+        palm_guard: the reference's palm-away guard (bones with a
+            negative dot product against the palm normal read as
+            straight).  It is mounting-dependent: it was written for a
+            head-on camera where the fingers point toward the sensor;
+            with the DESK-mounted leap (hand above the camera) every
+            bone points away from the palm and the guard zeroes ALL
+            flexion.  Off by default.
 
     Returns:
         :class:`HandAngles` with the directly measured flexion/abduction
@@ -220,10 +223,11 @@ def direct_angles_from_hand(hand) -> HandAngles:
                 flexion[0, 0] = max(0.0, 90.0 - _angle_deg(meta_dir, normal))
             flexion[0, 1] = _angle_deg(meta_dir, prox_dir)
             flexion[0, 2] = _angle_deg(middle_dir, distal_dir)
-            if prox_dir is not None and np.dot(prox_dir, normal) < 0:
-                flexion[0, 1] = 0.0
-            if distal_dir is not None and np.dot(distal_dir, normal) < 0:
-                flexion[0, 2] = 0.0
+            if palm_guard:
+                if prox_dir is not None and np.dot(prox_dir, normal) < 0:
+                    flexion[0, 1] = 0.0
+                if distal_dir is not None and np.dot(distal_dir, normal) < 0:
+                    flexion[0, 2] = 0.0
             # thumb abduction: the metacarpal's in-plane angle vs the
             # palm direction (wrist -> middle MCP)
             palm_dir = _unit(keypoints[9] - keypoints[0]) \
@@ -239,12 +243,13 @@ def direct_angles_from_hand(hand) -> HandAngles:
             flexion[row, 0] = _angle_deg(meta_dir, prox_dir)
             flexion[row, 1] = _angle_deg(prox_dir, middle_dir)
             flexion[row, 2] = _angle_deg(middle_dir, distal_dir)
-            if prox_dir is not None and np.dot(prox_dir, normal) < 0:
-                flexion[row, 0] = 0.0
-            if middle_dir is not None and np.dot(middle_dir, normal) < 0:
-                flexion[row, 1] = 0.0
-            if distal_dir is not None and np.dot(distal_dir, normal) < 0:
-                flexion[row, 2] = 0.0
+            if palm_guard:
+                if prox_dir is not None and np.dot(prox_dir, normal) < 0:
+                    flexion[row, 0] = 0.0
+                if middle_dir is not None and np.dot(middle_dir, normal) < 0:
+                    flexion[row, 1] = 0.0
+                if distal_dir is not None and np.dot(distal_dir, normal) < 0:
+                    flexion[row, 2] = 0.0
             if meta_dir is not None and prox_dir is not None:
                 meta_in = _unit(meta_dir - np.dot(meta_dir, normal) * normal)
                 prox_in = _unit(prox_dir - np.dot(prox_dir, normal) * normal)
