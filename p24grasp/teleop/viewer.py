@@ -7,6 +7,7 @@ state, joint angles and the P24 command.  Run with
 """
 from __future__ import annotations
 
+import sys
 import time
 from pathlib import Path
 
@@ -308,6 +309,7 @@ def run_mujoco_viewer(source, detector, retargeter=None, control_hz: float = 60.
     producer thread; the viewer stays on this thread).
     """
     import mujoco  # noqa: E402
+    import mujoco.viewer  # noqa: E402,F401  # submodule is not auto-imported
     from p24grasp.paths import ensure_hand_xml  # noqa: E402
     from p24grasp.teleop.retarget import P24_JOINT_NAMES  # noqa: E402
 
@@ -320,7 +322,15 @@ def run_mujoco_viewer(source, detector, retargeter=None, control_hz: float = 60.
         raise RuntimeError("some P24 joints are missing from the MJCF build")
 
     pipeline = TeleopPipeline(source, detector, retargeter=retargeter)
-    viewer = mujoco.viewer.launch_passive(model, data)
+    try:
+        viewer = mujoco.viewer.launch_passive(model, data)
+    except RuntimeError as exc:
+        if "mjpython" not in str(exc):
+            raise
+        print(f"[viewer] macOS 上交互式 MuJoCo 窗口需要 mjpython,请改用:\n"
+              f"[viewer]   sudo {Path(sys.executable).parent / 'mjpython'} "
+              "scripts/teleop_camera.py ...", flush=True)
+        raise
     control = FixedRateControl(pipeline, control_hz=control_hz)
     last_print = 0.0
 
