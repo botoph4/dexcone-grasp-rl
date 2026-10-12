@@ -231,6 +231,9 @@ class LeapDetector:
 
         self._listener = _LeapListener()
         self._connection.add_listener(self._listener)
+        self._diag_calls = 0
+        self._diag_done = False
+        self._diag_enabled = True
         # keep the connection open for the process lifetime (the binding
         # returns a context manager; enter it explicitly)
         self._open = self._connection.open()
@@ -239,6 +242,23 @@ class LeapDetector:
         mode = getattr(leap.TrackingMode, tracking_mode, None)
         if mode is not None:
             self._connection.set_tracking_mode(mode)
+
+    def _diagnose(self, hands) -> None:
+        """One-shot diagnostics: reconcile detect() with the listener."""
+        if self._diag_done or not self._diag_enabled:
+            return
+        self._diag_calls += 1
+        if self._diag_calls < 10 or not hands:
+            self._diag_done = self._diag_calls >= 10 and not hands
+            if not hands or self._diag_calls == 10:
+                with self._state._lock:
+                    frame_id = self._state.frame_id
+                    seen = self._state.hands_seen
+                print(f"[leap] detect() hands={len(hands) if hands is not None else 'None'} "
+                      f"frame_id={frame_id} listener_hands_seen={seen} "
+                      f"diag_calls={self._diag_calls}", flush=True)
+        else:
+            self._diag_done = True
 
     def detect(self, frame: Frame) -> HandDetection:
         """Return the latest hand as a 21-keypoint detection.
@@ -254,6 +274,8 @@ class LeapDetector:
         with self._state._lock:
             event = self._state.latest
         hands = getattr(event, "hands", None) if event is not None else None
+        # diagnostic: is the shared event the same one the listener saw?
+        self._diagnose(hands)
         if not hands:
             return HandDetection(keypoints3d=np.full((21, 3), np.nan),
                                  visibility=np.zeros(21), presence=0.0)
