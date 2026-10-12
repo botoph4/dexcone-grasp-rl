@@ -190,3 +190,52 @@ def test_detector_opens_and_subscribes_to_the_device():
     assert listener._device_open is not None  # pylint: disable=protected-access
     detector.close()
     assert listener._device_open._closed  # pylint: disable=protected-access
+
+
+def _straight_leap_hand():
+    """Straight hand in the leap frame: every bone along +y (up, away
+    from the camera), the digits fanned in x so the palm plane fit is
+    non-degenerate (normal -> +z in the converted camera frame)."""
+    digits = []
+    for x in (0.02, 0.01, 0.0, -0.01, -0.02):
+        points = [_V(x, 0.20, 0.0), _V(x, 0.24, 0.0), _V(x, 0.28, 0.0),
+                  _V(x, 0.31, 0.0), _V(x, 0.34, 0.0)]
+        digits.append(_digit(points))
+    return types.SimpleNamespace(
+        digits=digits, type="HandType.Right", confidence=1.0, id=1,
+        arm=_Bone(_V(0.0, 0.16, 0.0), _V(0.0, 0.20, 0.0)))
+
+
+def test_direct_angles_straight_hand_is_zero():
+    from p24grasp.teleop.leap import direct_angles_from_hand
+
+    angles = direct_angles_from_hand(_straight_leap_hand())
+    np.testing.assert_allclose(angles.flexion, 0.0, atol=1.0)
+
+
+def test_direct_angles_measure_adjacent_bone_angles():
+    from p24grasp.teleop.leap import direct_angles_from_hand
+
+    hand = _straight_leap_hand()
+    # bend the index middle bone (digits[1], bones[2]) away from +y
+    hand.digits[1] = _digit([
+        _V(0.0, 0.20, 0.0), _V(0.0, 0.24, 0.0), _V(0.0, 0.28, 0.0),
+        _V(0.0, 0.31, -0.02), _V(0.0, 0.33, -0.04)])
+    angles = direct_angles_from_hand(hand)
+    # PIP = angle(proximal (+y), middle (0.03, -0.02)) = 33.8 deg
+    assert abs(angles.flexion[1, 1] - 33.8) < 2.0
+    assert angles.flexion[1, 0] < 2.0  # the MCP stays straight
+
+
+def test_direct_angles_palm_away_guard_zeroes_flexion():
+    from p24grasp.teleop.leap import direct_angles_from_hand
+
+    hand = _straight_leap_hand()
+    # the index middle bone points along +z (leap frame): turned away
+    # from the palm along the normal, so the guard zeroes the flexion
+    # instead of reporting 180
+    hand.digits[1] = _digit([
+        _V(0.0, 0.20, 0.0), _V(0.0, 0.24, 0.0), _V(0.0, 0.28, 0.0),
+        _V(0.0, 0.28, 0.02), _V(0.0, 0.28, 0.04)])
+    angles = direct_angles_from_hand(hand)
+    assert angles.flexion[1, 1] == 0.0

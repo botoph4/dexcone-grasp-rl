@@ -116,7 +116,11 @@ class TeleopPipeline:
             HandDetection(keypoints3d=np.full((21, 3), np.nan),
                           visibility=np.zeros(21), presence=0.0)
         t2 = time.perf_counter()
-        raw = angles_from_keypoints(detection)
+        # a detector-provided angle set (the leap direct path) takes
+        # precedence over the keypoint-derived inter-segment angles
+        hand_angles = getattr(detection, "hand_angles", None)
+        raw = hand_angles if hand_angles is not None \
+            else angles_from_keypoints(detection)
         filtered = self.state_machine.update(raw, dt)
         t3 = time.perf_counter()
         if filtered.state in (State.HOLD, State.LOST):

@@ -56,8 +56,10 @@ from typing import Optional
 
 import numpy as np
 
+from p24grasp.teleop.angles import HandAngles
 from p24grasp.teleop.camera import Frame, FrameSource
 from p24grasp.teleop.detector import HandDetection
+from p24grasp.teleop.lateral import fit_palm_normal
 
 # MediaPipe-style keypoint row per digit: (first, last) exclusive.
 # digits[0]=thumb .. digits[4]=little; keypoint ids: thumb 1-4,
@@ -139,6 +141,121 @@ def keypoints_from_hand(hand) -> np.ndarray:
     return keypoints
 
 
+def _unit(vector: Optional[np.ndarray]) -> Optional[np.ndarray]:
+    if vector is None:
+        return None
+    norm = float(np.linalg.norm(vector))
+    return vector / norm if norm > 1e-9 else None
+
+
+def _angle_deg(first: Optional[np.ndarray], second: Optional[np.ndarray]) -> float:
+    """Angle between two unit-ish directions, degrees; 0 on degeneracy."""
+    if first is None or second is None:
+        return 0.0
+    cosine = float(np.clip(np.dot(first, second), -1.0, 1.0))
+    return float(np.degrees(np.arccos(cosine)))
+
+
+def direct_angles_from_hand(hand) -> HandAngles:
+    """Direct joint angles from the Gemini bones, ported from the
+    leap_motion_sync_with_ffh scheme (lpV2SyncFfh::calPubFingerAngle).
+
+    Every joint is the angle between two ADJACENT bone directions (the
+    bone endpoints are the joints), using the finger's REAL metacarpal
+    (palm -> MCP), not a wrist-ray proxy:
+
+      fingers:  MCP = angle(metacarpal, proximal)       [handBone vs prox]
+                PIP = angle(proximal, middle)           [prox vs middle]
+                DIP = angle(middle, distal)             [middle vs distal]
+      thumb:    CMC = the metacarpal's elevation above the palm plane
+                MP  = angle(metacarpal, proximal)
+                IP  = angle(middle, distal)             [their FbDir]
+      abduction: the in-palm-plane signed angle between the metacarpal
+                and the proximal phalanx (calFingerAdduction: both
+                directions are projected onto the palm plane first).
+
+    The reference's palm guards are kept: a bone pointing away from the
+    palm (dot with the palm normal < 0) zeroes its flexion -- fingers
+    turned away from the palm read as straight instead of bent.
+
+    Args:
+        hand: a leap hand object (digits with bones(), prev_joint/
+            next_joint); the palm normal is fitted from the converted
+            keypoints (the Python binding does not expose palm.normal).
+
+    Returns:
+        :class:`HandAngles` with the directly measured flexion/abduction
+        (visibility all 1.0; presence 1.0).
+    """
+    flexion = np.zeros((5, 3))
+    abduction = np.zeros(5)
+    keypoints = keypoints_from_hand(hand)
+    normal = fit_palm_normal(keypoints)
+    if np.linalg.norm(normal) < 1e-9:
+        normal = np.array([0.0, 0.0, 1.0])
+
+    def direction(bone) -> Optional[np.ndarray]:
+        nxt = _vector3(_call_or_attr(bone, "next_joint"))
+        prev = _vector3(_call_or_attr(bone, "prev_joint"))
+        if nxt is None or prev is None:
+            return None
+        return _unit(nxt - prev)
+
+    digits = _call_or_attr(hand, "digits")
+    if digits is None:
+        return HandAngles(flexion=flexion, abduction=abduction,
+                          flexion_vis=np.ones((5, 3)),
+                          abduction_vis=np.ones(5), presence=1.0)
+    for digit_index in range(min(5, len(digits))):
+        bones = _call_or_attr(digits[digit_index], "bones")
+        if bones is None or len(bones) < 4:
+            continue
+        metacarpal, proximal, middle, distal = bones[:4]
+        meta_dir = direction(metacarpal)
+        prox_dir = direction(proximal)
+        middle_dir = direction(middle)
+        distal_dir = direction(distal)
+        if digit_index == 0:  # thumb
+            if meta_dir is not None:
+                flexion[0, 0] = max(0.0, 90.0 - _angle_deg(meta_dir, normal))
+            flexion[0, 1] = _angle_deg(meta_dir, prox_dir)
+            flexion[0, 2] = _angle_deg(middle_dir, distal_dir)
+            if prox_dir is not None and np.dot(prox_dir, normal) < 0:
+                flexion[0, 1] = 0.0
+            if distal_dir is not None and np.dot(distal_dir, normal) < 0:
+                flexion[0, 2] = 0.0
+            # thumb abduction: the metacarpal's in-plane angle vs the
+            # palm direction (wrist -> middle MCP)
+            palm_dir = _unit(keypoints[9] - keypoints[0]) \
+                if np.isfinite(keypoints[9]).all() else None
+            if meta_dir is not None and palm_dir is not None:
+                meta_in = _unit(meta_dir - np.dot(meta_dir, normal) * normal)
+                palm_in = _unit(palm_dir - np.dot(palm_dir, normal) * normal)
+                if meta_in is not None and palm_in is not None:
+                    sign = np.sign(np.dot(normal, np.cross(palm_in, meta_in)))
+                    abduction[0] = sign * _angle_deg(palm_in, meta_in)
+        else:  # fingers
+            row = digit_index
+            flexion[row, 0] = _angle_deg(meta_dir, prox_dir)
+            flexion[row, 1] = _angle_deg(prox_dir, middle_dir)
+            flexion[row, 2] = _angle_deg(middle_dir, distal_dir)
+            if prox_dir is not None and np.dot(prox_dir, normal) < 0:
+                flexion[row, 0] = 0.0
+            if middle_dir is not None and np.dot(middle_dir, normal) < 0:
+                flexion[row, 1] = 0.0
+            if distal_dir is not None and np.dot(distal_dir, normal) < 0:
+                flexion[row, 2] = 0.0
+            if meta_dir is not None and prox_dir is not None:
+                meta_in = _unit(meta_dir - np.dot(meta_dir, normal) * normal)
+                prox_in = _unit(prox_dir - np.dot(prox_dir, normal) * normal)
+                if meta_in is not None and prox_in is not None:
+                    sign = np.sign(np.dot(normal, np.cross(meta_in, prox_in)))
+                    abduction[row] = sign * _angle_deg(meta_in, prox_in)
+    return HandAngles(flexion=flexion, abduction=abduction,
+                      flexion_vis=np.ones((5, 3)), abduction_vis=np.ones(5),
+                      presence=1.0)
+
+
 class _LeapState:
     """Shared between the source (waits for events) and the detector
     (converts the latest hand); the Gemini listener runs on the
@@ -164,7 +281,18 @@ class LeapDetector:
     checks).
     """
 
-    def __init__(self, tracking_mode: str = "Desktop"):
+    def __init__(self, tracking_mode: str = "Desktop",
+                 direct_angles: bool = True):
+        """Open the Leap connection and register the listener.
+
+        Args:
+            tracking_mode: Gemini tracking mode ("Desktop" etc.).
+            direct_angles: compute the joint angles directly from the
+                bone directions (the leap_motion_sync_with_ffh scheme)
+                and attach them to each detection; when False, the
+                pipeline falls back to the keypoint-derived angles.
+        """
+        self._direct_angles = direct_angles
         try:
             import leap  # noqa: E402
         except ImportError as exc:
@@ -281,13 +409,16 @@ class LeapDetector:
                                  visibility=np.zeros(21), presence=0.0)
         hand = hands[0]
         keypoints = keypoints_from_hand(hand)
-        handedness = None
+        detection = HandDetection(keypoints3d=keypoints,
+                                  visibility=np.ones(21), presence=1.0)
         hand_type = getattr(hand, "type", None)
         if hand_type is not None:
-            handedness = str(hand_type).rsplit(".", 1)[-1]
-        return HandDetection(keypoints3d=keypoints,
-                             visibility=np.ones(21), presence=1.0,
-                             handedness=handedness)
+            detection.handedness = str(hand_type).rsplit(".", 1)[-1]
+        if self._direct_angles:
+            # the leap's own joint angles (adjacent-bone directions,
+            # FFH-style) override the keypoint-derived ones downstream
+            detection.hand_angles = direct_angles_from_hand(hand)
+        return detection
 
     def close(self) -> None:
         """Close the Leap connection (safe to call repeatedly)."""

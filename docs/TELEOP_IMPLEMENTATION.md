@@ -246,3 +246,18 @@ SDK 带 `libLeapC.6.dylib`,而绑定脚本硬编码查找 `.5`——构建时用
 python scripts/teleop_camera.py --camera leap --mujoco-view --no-lateral
 # 与 RGB-D 相机共用全部管线:标定(--calibrate)、视图器、5 种重定向后端
 ```
+
+### 8.1 Leap 直接关节角映射(leap_motion_sync_with_ffh 方案)
+
+参考 thirdparty/leap_motion_sync_with_ffh 的 `lpV2SyncFfh::calPubFingerAngle`,
+Leap 路径默认**跳过关键点往返**,直接从相邻骨骼方向取关节角
+(`direct_angles_from_hand`,输出管线统一的 HandAngles,复用标定/状态机/
+混合重定向):
+
+- 四指:MCP = 角(掌骨, 近节)、PIP = 角(近节, 中节)、DIP = 角(中节, 远节),
+  侧摆 = 掌平面内掌骨 vs 近节的带符号角(投影到掌心平面后测量);
+- 拇指:CMC = 掌骨相对掌平面的仰角、MP = 角(掌骨, 近节)、IP = 角(中节, 远节);
+- **掌心保护**:骨方向与掌法向点积 < 0(手指背离掌心)时该屈曲置零;
+- 掌心法向由转换后的关键点拟合(绑定不暴露 palm.normal)。
+
+切换方式:`--leap-angles direct`(默认)/ `keypoints`(回退到通用段间角)。

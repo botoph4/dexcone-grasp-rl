@@ -59,6 +59,9 @@ class HandDetection:
     visibility: np.ndarray  # (21,)
     presence: float
     handedness: Optional[str] = None
+    # optional precomputed joint angles (the leap direct path): when set,
+    # the pipeline prefers them over angles_from_keypoints
+    hand_angles: object = None
 
 
 def sanitize_visibility(values: np.ndarray) -> np.ndarray:

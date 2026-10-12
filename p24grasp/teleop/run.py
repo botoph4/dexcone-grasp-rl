@@ -168,6 +168,13 @@ def camera_main(argv: list[str] | None = None) -> int:
                         help="hand-tracking backend: realsense/orbbec RGB-D "
                              "cameras (auto-detect) or leap (Leap Motion "
                              "Controller 2 with the Ultraleap Gemini service)")
+    parser.add_argument("--leap-angles", choices=("direct", "keypoints"),
+                        default="direct",
+                        help="with --camera leap: direct = joint angles from "
+                             "the adjacent bone directions (the "
+                             "leap_motion_sync_with_ffh scheme, default); "
+                             "keypoints = the generic keypoint-derived "
+                             "inter-segment angles")
     parser.add_argument("--probe", action="store_true",
                         help="run step-by-step camera bring-up diagnostics and exit "
                              "(orbbec only)")
@@ -222,7 +229,7 @@ def camera_main(argv: list[str] | None = None) -> int:
             LeapSource,
         )
 
-        detector = LeapDetector()
+        detector = LeapDetector(direct_angles=args.leap_angles == "direct")
         source = LeapSource(detector, width=args.width or 640, height=args.height)
         width = source.width
     else:
