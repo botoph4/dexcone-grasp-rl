@@ -235,7 +235,10 @@ MediaPipe 式 21 关键点布局:
 **驱动**:官方绑定 `leapc-python-bindings`(`import leap`,Listener 回调
 `on_tracking_event`) + Gemini 追踪服务;平台覆盖 Windows / Linux x64 /
 **Linux ARM**(py3.8-3.11 预编译,即部署板)/ Darwin(预编译仅旧版
-Python,新版需自行编译 `leapc_cffi`)。
+Python,新版需自行编译 `leapc_cffi`)。实测要点:新版 Gemini 的 macOS
+SDK 带 `libLeapC.6.dylib`,而绑定脚本硬编码查找 `.5`——构建时用
+`LEAPC_LIB_OVERRIDE=<SDK>/lib/libLeapC.6.dylib` 绕过;运行时把该库
+软链到解释器 rpath 搜索路径(如 `<conda-env>/lib/libLeapC.6.dylib`)。
 
 **使用**:
 

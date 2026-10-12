@@ -21,3 +21,6 @@ MUJOCO_LOG.TXT
 
 # OrbbecSDK runtime logs
 Log/
+
+# local dependency clones
+thirdparty/
