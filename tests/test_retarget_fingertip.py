@@ -129,13 +129,14 @@ def _realistic_open_keypoints(roll_deg: float = 0.0) -> np.ndarray:
     return kp
 
 
-def test_targets_straight_hand_point_along_palm_x():
+def test_targets_straight_hand_point_along_robot_z():
     ret = FingertipRetargeter(scale=1.0, smooth_weight=0.0, max_nfev=400)
     targets = ret.targets_from_keypoints(_realistic_open_keypoints())
     assert targets is not None
-    # finger direction maps to palm +x: every target's x dominates
-    assert np.all(targets[:, 0] > 0.0)
-    assert np.all(np.abs(targets[:, 0]) > np.abs(targets[:, 1]))
+    # the finger direction maps onto the robot's +z (its FK finger
+    # direction): every target's z dominates, and the fan stays in y
+    assert np.all(targets[:, 2] > 0.0)
+    assert np.all(np.abs(targets[:, 2]) > np.abs(targets[:, 0]))
 
 
 def test_targets_are_invariant_to_camera_roll():

@@ -274,6 +274,7 @@ class _TipSpaceRetargeter:
                         for name in self._chain_names])
         scale = self._update_scale(rel)
         targets = scale * (frame @ rel.T).T + self.mount_t
+        targets = targets @ self._TARGET_ROTATION.T
         if thumb_over_finger(keypoints3d, 5) and self._last_targets is not None:
             index_slot = self._chain_names.index("index")
             targets[index_slot] = self._last_targets[index_slot]
@@ -311,6 +312,7 @@ class _TipSpaceRetargeter:
             np.stack([keypoints3d[self.TIP_IDS[name]] - wrist
                       for name in self._chain_names]))
         pip_targets = scale * (frame @ rel.T).T + self.mount_t
+        pip_targets = pip_targets @ self._TARGET_ROTATION.T
         if thumb_over_finger(keypoints3d, 5) and self._last_pip_targets is not None:
             index_slot = self._chain_names.index("index")
             pip_targets[index_slot] = self._last_pip_targets[index_slot]
@@ -387,6 +389,17 @@ class _TipSpaceRetargeter:
         return self._palm_frame
 
     mount_t = np.zeros(3)
+
+    # The robot's fingers extend along +z in its FK (the open index tip
+    # sits at (0, 49, 217) mm), while the palm-frame transform maps the
+    # human's finger direction (frame x) onto +x.  Without this rotation
+    # every target lands in the z=0 plane, 90 degrees off the robot's
+    # finger direction, and the solver saturates the MCP joints against
+    # their limits trying to reach sideways.  The rotation maps x -> +z
+    # and keeps the fan direction (y) as y: (x, y, z) -> (-z, y, x).
+    _TARGET_ROTATION = np.array([[0.0, 0.0, -1.0],
+                                 [0.0, 1.0, 0.0],
+                                 [1.0, 0.0, 0.0]])
 
     @staticmethod
     def _wrist_depth_sane(keypoints3d: np.ndarray) -> bool:
