@@ -606,6 +606,7 @@ class HybridRetargeter(_TipSpaceRetargeter):
             [2.0, 1.0, 1.0, 1.0, 2.0])  # index..thumb chain order (pinch side)
         prior_config = {
             "mcp_flexion": 0.01, "lateral": 0.05, "distal": 0.01,
+            "thumb_flexion": 0.01,
             **(prior_weights or {})}
         self._prior_weights = self._make_prior_weights(prior_config)
         # Guided-gesture calibration takes precedence when present;
@@ -655,8 +656,8 @@ class HybridRetargeter(_TipSpaceRetargeter):
         four-finger classes use the reference-workspace strengths.
 
         Args:
-            config: dict with keys "mcp_flexion"/"lateral"/"distal"
-                (per-class prior strengths).
+            config: dict with keys "mcp_flexion"/"lateral"/"distal"/
+                "thumb_flexion" (per-class prior strengths).
 
         Returns:
             (16,) prior-weight array in ACTIVE order.
@@ -667,7 +668,15 @@ class HybridRetargeter(_TipSpaceRetargeter):
             start, _ = self.hand.chain_slices[name]
             for offset, joint in enumerate(chain.active_joint_names):
                 if joint.startswith("thumb_"):
-                    weights[start + offset] = 0.0
+                    # thumb flexion DOFs get a small prior: the tip+PIP
+                    # targets underdetermine the 4-DOF chain and the
+                    # unconstrained solver drives the MP hyperextended
+                    # (measured -20 deg on the leap path); the
+                    # opposition DOF (joint_3) stays free for the pinch
+                    if joint.endswith("_joint_3"):
+                        weights[start + offset] = 0.0
+                    else:
+                        weights[start + offset] = config["thumb_flexion"]
                 elif joint.endswith("_joint_1"):
                     weights[start + offset] = config["mcp_flexion"]
                 elif joint.endswith("_joint_2"):
