@@ -76,8 +76,10 @@ def test_thumb_baseline_mapping():
     flexion[0, 1] = 50.0  # thumb MP bend
     flexion[0, 2] = 60.0  # thumb IP bend
     q = DirectAngleScaling().retarget(_angles(flexion))
-    assert q[0] == 30.0 * THUMB_FLEX_SCALE[0]
-    assert q[1] == 50.0
+    # the thumb flexion carries the extra amplification (default 1.5)
+    assert q[0] == 30.0 * THUMB_FLEX_SCALE[0] * 1.5
+    assert q[1] == 50.0 * 1.5
+    assert q[3] == 80.0  # 60 x 1.5 = 90, clamped to the URDF limit
     assert q[2] == 0.0  # CMC abduction neutral in the baseline
     assert q[3] == 60.0
 

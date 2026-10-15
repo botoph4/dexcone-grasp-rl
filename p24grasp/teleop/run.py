@@ -64,19 +64,22 @@ def _auto_detect_source(width: int, height: int, fps: int,
 
 
 def make_retargeter(kind: str, hand_calibration_path=None, lateral_enabled=True,
-                    wrist_sanity_m: float | None = 0.10):
+                    wrist_sanity_m: float | None = 0.10,
+                    thumb_gain: float = 1.5):
     """Factory for the retargeting backends.
 
     wrist_sanity_m: the hybrid's wrist-to-palm trust bound (None
     disables -- the leap wrist comes from the arm bone, farther than the
     wrist-mounted RGB-D camera's and free of depth glitches).
+    thumb_gain: extra amplification of the thumb flexion mapping.
     """
     if kind == "hybrid":
         from p24grasp.teleop.retarget import HybridRetargeter  # noqa: E402
 
         return HybridRetargeter(hand_calibration_path=hand_calibration_path,
                                 lateral_enabled=lateral_enabled,
-                                wrist_sanity_m=wrist_sanity_m)
+                                wrist_sanity_m=wrist_sanity_m,
+                                thumb_gain=thumb_gain)
     if kind == "fingertip":
         from p24grasp.teleop.retarget import FingertipRetargeter  # noqa: E402
 
@@ -120,6 +123,10 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
                              "default) | fingertip (pure tip optimization) | "
                              "scaling (joint angles only) | geort (neural, "
                              "trained in sim) | dex (dex-retargeting optimizer)")
+    parser.add_argument("--thumb-gain", type=float, default=1.5,
+                        help="extra amplification of the thumb flexion "
+                             "mapping (default 1.5; the 1:1 mapping read as "
+                             "too small)")
 
 
 CSV_HEADER = ["ts", "state", "thumb_cmc", "thumb_mp", "index_mcp", "index_pip",
@@ -135,7 +142,8 @@ def _run(source, args: argparse.Namespace, csv_row,
     wrist_sanity_m = None if getattr(args, "camera", None) == "leap" else 0.10
     retargeter = make_retargeter(args.retarget, args.calibration,
                                  lateral_enabled=not args.no_lateral,
-                                 wrist_sanity_m=wrist_sanity_m)
+                                 wrist_sanity_m=wrist_sanity_m,
+                                 thumb_gain=args.thumb_gain)
     pipeline = TeleopPipeline(source, detector, retargeter=retargeter)
     frames = 0
     try:
@@ -290,7 +298,8 @@ def camera_main(argv: list[str] | None = None) -> int:
 
         retargeter = make_retargeter(args.retarget, args.calibration,
                                      lateral_enabled=not args.no_lateral,
-                                     wrist_sanity_m=wrist_sanity_m)
+                                     wrist_sanity_m=wrist_sanity_m,
+                                     thumb_gain=args.thumb_gain)
         if detector is None:
             detector = HandDetector(model_path=args.model)
         try:

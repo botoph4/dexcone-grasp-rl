@@ -81,7 +81,8 @@ class Retargeter(Protocol):
 
 
 def scaling_q16(hand, angles: HandAngles,
-                 calibration: "HandCalibration | None" = None) -> np.ndarray:
+                calibration: "HandCalibration | None" = None,
+                thumb_gain: float = 1.5) -> np.ndarray:
     """DirectAngleScaling output as the 16 active DOFs (rad, active order).
 
     Args:
@@ -89,6 +90,8 @@ def scaling_q16(hand, angles: HandAngles,
         angles: filtered human :class:`HandAngles`.
         calibration: optional per-user :class:`HandCalibration` (flexion
             offsets/gains and the coupled distal gain).
+        thumb_gain: extra amplification of the thumb's flexion mapping
+            (the thumb's motion read as too small at 1:1).
 
     Returns:
         (16,) active-DOF joint angles in radians, in ACTIVE order
@@ -99,9 +102,10 @@ def scaling_q16(hand, angles: HandAngles,
             flexion_offsets_deg=calibration.flexion_offsets_deg,
             flexion_gains=calibration.flexion_gains,
             distal_total_gain=calibration.distal_total_gain,
+            thumb_gain=thumb_gain,
         )
     else:
-        scaling = DirectAngleScaling()
+        scaling = DirectAngleScaling(thumb_gain=thumb_gain)
     q20 = np.radians(scaling.retarget(angles))
     out = np.zeros(hand.n_active)
     thumb_s, thumb_e = hand.chain_slices["thumb"]
@@ -601,6 +605,7 @@ class HybridRetargeter(_TipSpaceRetargeter):
                  lateral_calibration_path: str | Path | None = None,
                  hand_calibration_path: str | Path | None = None,
                  lateral_enabled: bool = True,
+                 thumb_gain: float = 1.5,
                  wrist_sanity_m: float | None = 0.10):
         # max_nfev=200 covers hard cold starts; with the cold start at q0
         # (see solve()) typical solves converge in a single iteration.
@@ -622,6 +627,7 @@ class HybridRetargeter(_TipSpaceRetargeter):
         self.reg_weight = reg_weight
         self.pip_weight = pip_weight
         self.lateral_enabled = lateral_enabled
+        self.thumb_gain = thumb_gain
         self._lateral_j2 = np.array([5, 9, 13, 17])  # URDF joint_2 slots
         self._weights = np.array(
             [2.0, 1.0, 1.0, 1.0, 2.0])  # index..thumb chain order (pinch side)
@@ -839,7 +845,8 @@ class HybridRetargeter(_TipSpaceRetargeter):
         Returns:
             (20,) URDF-order joint command in degrees.
         """
-        q0 = scaling_q16(self.hand, angles, self._hand_calibration)
+        q0 = scaling_q16(self.hand, angles, self._hand_calibration,
+                         thumb_gain=self.thumb_gain)
         if self.lateral_enabled:
             # Shared calibrated lateral: always write the estimator's robot
             # joint_2 values into the prior (it holds its calibrated initial
@@ -892,6 +899,7 @@ class DirectAngleScaling:
     flexion_offsets_deg: np.ndarray | None = None  # (5, 3) per-user zero baseline
     flexion_gains: np.ndarray | None = None  # (5, 3) per-user ROM gains
     distal_total_gain: float | None = None  # per-user coupled distal gain
+    thumb_gain: float = 1.5  # extra amplification of the thumb flexion
     _limits = P24_LIMITS
 
     def _calibrated(self, flexion: np.ndarray) -> np.ndarray:
@@ -911,7 +919,9 @@ class DirectAngleScaling:
             gains = np.vstack([THUMB_FLEX_SCALE,
                                np.tile(FINGER_FLEX_SCALE, (4, 1))])
         else:
-            gains = np.asarray(self.flexion_gains)
+            gains = np.asarray(self.flexion_gains).copy()
+        # extra thumb amplification (its motion read as too small at 1:1)
+        gains[0] *= self.thumb_gain
         return (flexion - offsets) * gains
 
     def retarget(self, angles: HandAngles,
