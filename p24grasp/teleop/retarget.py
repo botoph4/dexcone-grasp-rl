@@ -206,6 +206,12 @@ class _TipSpaceRetargeter:
                 data = self.hand.joints[joint]
                 self._lb[start + offset] = data.lower
                 self._ub[start + offset] = data.upper
+        # The human thumb never hyperextends backward, and the solver
+        # otherwise exploits the MP's [-20, 80] range: measured -19 deg
+        # constantly on the leap path, in a basin WORSE than MP=0 on
+        # every residual.  Clamp the thumb MP's lower bound to 0.
+        thumb_start, _ = self.hand.chain_slices["thumb"]
+        self._lb[thumb_start + 1] = 0.0
         # robot fingertip reach at the open pose
         open_tip = self.hand.tip_point(self._chain("index"), np.zeros(3))
         self._robot_reach = float(np.linalg.norm(open_tip))
