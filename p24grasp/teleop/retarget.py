@@ -793,6 +793,12 @@ class HybridRetargeter(_TipSpaceRetargeter):
             self._residuals(q0, targets, q0, pinch_human, pip_targets) ** 2))
         if cost_prior < cost_stale:
             x0 = q0.copy()
+        # debug snapshot for the live-path diagnostics
+        self.last_debug = {
+            "x0": x0.copy(), "q0": q0.copy(),
+            "targets": np.asarray(targets).copy(),
+            "cost_stale": cost_stale, "cost_prior": cost_prior,
+        }
         # method="dogbox": trf stalls when the warm start sits exactly on a
         # joint bound (the zero pose is the lower bound for 12 of 16 DOFs).
         result = least_squares(
