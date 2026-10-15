@@ -470,7 +470,9 @@ class _TipSpaceRetargeter:
             (16,) integer index array into a 20-joint URDF vector.
         """
         indices = []
-        for offset in (4, 8, 12, 16):  # fingers: (MCP, abd, PIP, DIP=mimic)
+        # URDF finger rows in ACTIVE (chain) order: index, little,
+        # middle, ring -- (MCP, abd, PIP, DIP=mimic) per finger
+        for offset in (4, 16, 8, 12):
             indices.extend([offset + 0, offset + 1, offset + 2])
         indices.extend([0, 1, 2, 3])  # thumb URDF row, last in active order
         return np.array(indices)
@@ -591,6 +593,13 @@ class HybridRetargeter(_TipSpaceRetargeter):
              + w_reg * ||q - q0||
         s.t.   URDF joint limits, warm-started from the previous frame.
 
+    The objective alone has no self-collision notion: the URDF has no
+    inter-finger contact geometry, so a human squeeze maps straight
+    into interpenetrating phalanges.  ``solve()`` therefore runs a
+    post-solve separation pass (``_separate_fingers``) that opens the
+    involved fingers' lateral DOFs until every adjacent pair clears
+    ``collision_threshold_m`` (disabled by ``collision_avoidance=False``).
+
     When the keypoints lack depth (occlusion / hand out of view), the
     retargeter HOLDs the last optimized command -- falling back to the pure
     joint mapping would jump, because the optimizer's solution differs from
@@ -606,7 +615,9 @@ class HybridRetargeter(_TipSpaceRetargeter):
                  hand_calibration_path: str | Path | None = None,
                  lateral_enabled: bool = True,
                  thumb_gain: float = 1.5,
-                 wrist_sanity_m: float | None = 0.10):
+                 wrist_sanity_m: float | None = 0.10,
+                 collision_avoidance: bool = True,
+                 collision_threshold_m: float = 0.022):
         # max_nfev=200 covers hard cold starts; with the cold start at q0
         # (see solve()) typical solves converge in a single iteration.
         # NOTE: do NOT skip solves on "unchanged" targets -- a slowly
@@ -628,6 +639,8 @@ class HybridRetargeter(_TipSpaceRetargeter):
         self.pip_weight = pip_weight
         self.lateral_enabled = lateral_enabled
         self.thumb_gain = thumb_gain
+        self.collision_avoidance = collision_avoidance
+        self.collision_threshold_m = collision_threshold_m
         self._lateral_j2 = np.array([5, 9, 13, 17])  # URDF joint_2 slots
         self._weights = np.array(
             [2.0, 1.0, 1.0, 1.0, 2.0])  # index..thumb chain order (pinch side)
@@ -720,28 +733,163 @@ class HybridRetargeter(_TipSpaceRetargeter):
                     weights[start + offset] = config["distal"]
         return weights
 
-    PIP_LINK_NAMES = {
-        "index": "index_ip_link", "little": "little_ip_link",
-        "middle": "middle_ip_link", "ring": "ring_ip_link",
-        "thumb": "thumb_ip_link",
-    }
+    # adjacent four-finger pairs whose phalanges must not interpenetrate:
+    # the URDF has no inter-finger contact geometry, so nothing else
+    # stops the mapping from driving them through each other (the tips
+    # converge when the human squeezes or grips something small).  The
+    # thumb is excluded -- the pinch residual intentionally brings it
+    # to the index tip.
+    FINGER_NEIGHBORS = (("index", "middle"), ("middle", "ring"),
+                        ("ring", "little"))
 
-    def _pip_positions(self, q16: np.ndarray) -> np.ndarray:
-        """(5, 3) robot PIP-joint positions at q16 (chain order).
+    @staticmethod
+    def _checkpoint_links(name: str) -> tuple[str, str, str]:
+        """PIP/DIP/tip link names of a four-finger chain."""
+        return (f"{name}_ip_link", f"{name}_dip_link", f"{name}_tip_link")
+
+    def _finger_checkpoints(self, q16: np.ndarray) -> np.ndarray:
+        """(4, 5, 3) PIP/DIP/tip + segment-midpoint positions of the four
+        fingers at q16.
+
+        The five checkpoints per finger (PIP, PIP-DIP midpoint, DIP,
+        DIP-tip midpoint, tip) sample the phalanx paths; the pairwise
+        distances between adjacent fingers' checkpoints feed the
+        self-collision penalty (see ``_residuals``).  Joints alone are
+        not enough: two phalanges can scissor-cross with every joint
+        pair still far apart (measured 1.5 mm segment distance with
+        >= 27 mm joint distances).
 
         Args:
             q16: (16,) active-DOF angles (rad).
 
         Returns:
-            (5, 3) forward-kinematics PIP-joint positions in the robot
-            base frame, rows in chain order.
+            (4, 5, 3) positions in the robot base frame, first axis in
+            chain order (index, little, middle, ring), second axis
+            PIP/mid/DIP/mid/tip.
         """
-        positions = []
+        rows = []
         for name in self._chain_names:
+            if name == "thumb":
+                continue
             start, end = self.hand.chain_slices[name]
             transforms = self.hand.fk_chain(self._chain(name), q16[start:end])
-            positions.append(transforms[self.PIP_LINK_NAMES[name]][:3, 3])
-        return np.stack(positions)
+            pip_dip_tip = np.stack([transforms[link][:3, 3]
+                                    for link in self._checkpoint_links(name)])
+            rows.append(np.stack([
+                pip_dip_tip[0],
+                (pip_dip_tip[0] + pip_dip_tip[1]) / 2.0,
+                pip_dip_tip[1],
+                (pip_dip_tip[1] + pip_dip_tip[2]) / 2.0,
+                pip_dip_tip[2],
+            ]))
+        return np.stack(rows)
+
+    def _pair_distances(self, q16: np.ndarray) -> np.ndarray:
+        """(3,) minimum checkpoint distance per adjacent finger pair.
+
+        Args:
+            q16: (16,) active-DOF angles (rad).
+
+        Returns:
+            Minimum over the 25 checkpoint pairs of each neighbor pair,
+            in ``FINGER_NEIGHBORS`` order, meters.
+        """
+        checkpoints = self._finger_checkpoints(q16)
+        minima = []
+        for a_name, b_name in self.FINGER_NEIGHBORS:
+            a = checkpoints[self._chain_names.index(a_name)]
+            b = checkpoints[self._chain_names.index(b_name)]
+            minima.append(float(np.linalg.norm(
+                a[:, None, :] - b[None, :, :], axis=-1).min()))
+        return np.array(minima)
+
+    def _separate_fingers(self, q16: np.ndarray) -> np.ndarray:
+        """Push apart adjacent fingers whose phalanges interpenetrate.
+
+        The hybrid objective reproduces the human gesture as-is: when
+        the human squeezes adjacent fingertips together, the mapped
+        robot fingers clip through each other (the robot phalanges are
+        wider than the human's and the URDF has no inter-finger
+        collision bodies to stop them).  This post-solve pass walks
+        the involved fingers' lateral (joint_2) DOFs outward -- the
+        fan-opening direction -- with a small coordinate-descent line
+        search until every adjacent pair clears
+        ``collision_threshold_m``, or no lateral move improves the
+        worst pair.
+
+        Lateral-only keeps the pass cheap (a few FK evaluations, only
+        while a violation exists) and leaves the tuned objective
+        untouched: flexion still follows the human, only the fan
+        angle widens where the phalanges would overlap.
+
+        Args:
+            q16: (16,) solved active-DOF angles (rad), within bounds.
+
+        Returns:
+            (16,) adjusted angles (rad, within bounds); unchanged when
+            no pair violates the threshold or the search cannot improve
+            the worst pair.
+        """
+        lateral_steps = np.radians(np.array([0.0, 4.0, 8.0, 12.0, 16.0,
+                                             20.0, 24.0]))
+        q = np.asarray(q16, dtype=np.float64).copy()
+        for _ in range(3):  # at most three sweep rounds per pair
+            distances = self._pair_distances(q)
+            worst = int(np.argmin(distances))
+            if distances[worst] >= self.collision_threshold_m:
+                break
+            a_name, b_name = self.FINGER_NEIGHBORS[worst]
+            a_idx = self._chain_names.index(a_name)
+            b_idx = self._chain_names.index(b_name)
+            a_slot = self.hand.chain_slices[a_name][0] + 1  # joint_2 slot
+            b_slot = self.hand.chain_slices[b_name][0] + 1
+            # the fan-opening direction of each lateral: the sign of
+            # joint_2 that shifts the finger's checkpoints away from
+            # the neighbor's centroid
+            checkpoints = self._finger_checkpoints(q)
+            a_center = checkpoints[a_idx].mean(axis=0)
+            b_center = checkpoints[b_idx].mean(axis=0)
+            away_a = a_center - b_center
+            away_b = b_center - a_center
+
+            def _lateral_sign(slot: int, idx: int, center: np.ndarray,
+                              away: np.ndarray) -> float:
+                probe = q.copy()
+                probe[slot] = min(probe[slot] + 1e-3, self._ub[slot])
+                shifted = self._finger_checkpoints(probe)[idx].mean(axis=0)
+                return 1.0 if float((shifted - center) @ away) > 0.0 else -1.0
+
+            sign_a = _lateral_sign(a_slot, a_idx, a_center, away_a)
+            sign_b = _lateral_sign(b_slot, b_idx, b_center, away_b)
+            # coordinate descent: sweep finger A's lateral outward, then
+            # finger B's, keeping the better of the two; accept a step
+            # only when it improves the WORST pair distance (it cannot
+            # be allowed to hurt any other pair either -- the global
+            # min is what the check below re-evaluates)
+            improved = False
+            for slot, sign in ((a_slot, sign_a), (b_slot, sign_b)):
+                best_q = None
+                best_d = distances.min()
+                for step in lateral_steps:
+                    trial = q.copy()
+                    trial[slot] += sign * step
+                    trial[slot] = np.clip(trial[slot], self._lb[slot],
+                                          self._ub[slot])
+                    if trial[slot] == q[slot]:
+                        continue
+                    d_trial = self._pair_distances(trial).min()
+                    if d_trial > best_d:
+                        best_d = d_trial
+                        best_q = trial
+                if best_q is not None:
+                    q = best_q
+                    distances = self._pair_distances(q)
+                    improved = True
+                    if distances.min() >= self.collision_threshold_m:
+                        return q
+            if not improved:
+                break
+        return q
 
     def _residuals(self, q16: np.ndarray, targets: np.ndarray,
                    q0: np.ndarray, pinch_human: float,
@@ -763,12 +911,17 @@ class HybridRetargeter(_TipSpaceRetargeter):
         """
         tips = self._tips(q16)
         residuals = [self.tip_weight * self._weights[:, None] * (targets - tips)]
+        checkpoints = self._finger_checkpoints(q16)
         if pip_targets is not None:
             # Vector10's proximal half: constrain the middle joints so the
-            # fingertips alone cannot be satisfied by odd postures
+            # fingertips alone cannot be satisfied by odd postures.  The
+            # four-finger PIP positions come from the checkpoints (no
+            # second FK pass); the thumb row carries weight zero.
+            pip_positions = np.zeros((5, 3))
+            pip_positions[:4] = checkpoints[:, 0]
             residuals.append(
                 self.pip_weight * self._pip_weights[:, None]
-                * (pip_targets - self._pip_positions(q16)))
+                * (pip_targets - pip_positions))
         index_tip = tips[self._chain_names.index("index")]
         thumb_tip = tips[self._chain_names.index("thumb")]
         pinch_robot = float(np.linalg.norm(thumb_tip - index_tip))
@@ -829,6 +982,14 @@ class HybridRetargeter(_TipSpaceRetargeter):
             bounds=(self._lb, self._ub), method="dogbox",
             jac="2-point", max_nfev=self.max_nfev)
         self._q_prev = np.clip(result.x, self._lb, self._ub)
+        # the objective has no self-collision notion -- the URDF has no
+        # inter-finger contact bodies -- so a human squeeze maps straight
+        # into interpenetrating phalanges; separate them afterwards
+        if self.collision_avoidance:
+            separated = self._separate_fingers(self._q_prev)
+            self.last_debug["collision_min_mm"] = (
+                float(self._pair_distances(separated).min()) * 1000.0)
+            self._q_prev = separated
         self._q20_prev = self._to_urdf_degrees(self._q_prev)
         return self._q20_prev.copy()
 

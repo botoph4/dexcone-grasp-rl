@@ -280,3 +280,100 @@ def test_slow_finger_motion_is_followed():
     kp[8, 2] += 0.0005  # index tip drifts 0.5 mm (slow motion)
     q2 = ret.retarget(_angles(flexion=40.0), keypoints3d=kp)
     assert np.abs(q2 - q1).max() > 0.0  # the finger followed the drift
+
+
+def test_active_urdf_round_trip_preserves_finger_slots():
+    # regression: _active_from_urdf iterated the URDF finger rows in
+    # index/middle/ring/little order while the active order is
+    # index/LITTLE/middle/ring -- rotating the middle/ring/little angles
+    # in every _q20_to_active conversion (test reads and the geort
+    # teacher training data)
+    ret = _reset_retargeter()
+    q = np.zeros(ret.hand.n_active)
+    for name, values in (("index", (10.0, 2.0, 20.0)),
+                         ("little", (30.0, 3.0, 40.0)),
+                         ("middle", (50.0, 4.0, 60.0)),
+                         ("ring", (70.0, 5.0, 80.0))):
+        start, _ = ret.hand.chain_slices[name]
+        q[start:start + 3] = np.radians(values)
+    q20 = ret._to_urdf_degrees(q)  # pylint: disable=protected-access
+    np.testing.assert_allclose(
+        ret._q20_to_active(q20), q,  # pylint: disable=protected-access
+        atol=1e-9)
+
+
+def _crossing_pose(ret: HybridRetargeter) -> np.ndarray:
+    """Index/middle fingers flexed with opposing laterals: the mapped
+    phalanges scissor-cross (min checkpoint distance ~1 mm)."""
+    q = np.zeros(ret.hand.n_active)
+    index_s, _ = ret.hand.chain_slices["index"]
+    middle_s, _ = ret.hand.chain_slices["middle"]
+    q[index_s] = np.radians(50.0)
+    q[index_s + 2] = np.radians(50.0)
+    q[index_s + 1] = np.radians(-14.0)
+    q[middle_s] = np.radians(55.0)
+    q[middle_s + 2] = np.radians(55.0)
+    q[middle_s + 1] = np.radians(14.0)
+    return q
+
+
+def test_solve_separates_crossing_fingers():
+    # the hybrid objective alone maps a human squeeze straight into
+    # interpenetrating phalanges (the URDF has no inter-finger contact
+    # geometry); the post-solve separation pass must clear the threshold
+    ret = _reset_retargeter()
+    q = _crossing_pose(ret)
+    assert ret._pair_distances(q).min() * 1000 < 10.0  # pylint: disable=protected-access
+    q20 = ret.solve(ret._tips(q), q)  # pylint: disable=protected-access
+    q_sol = np.asarray(ret._q20_to_active(q20))  # pylint: disable=protected-access
+    min_mm = ret._pair_distances(q_sol).min() * 1000  # pylint: disable=protected-access
+    assert min_mm >= ret.collision_threshold_m * 1000
+
+
+def test_collision_avoidance_disabled_keeps_the_crossing():
+    import tempfile
+
+    tmp = Path(tempfile.mkdtemp())
+    ret = HybridRetargeter(scale=1.0, max_nfev=400,
+                           lateral_calibration_path=tmp / "lateral.json",
+                           hand_calibration_path=tmp / "hand.json",
+                           lateral_enabled=False,
+                           collision_avoidance=False)
+    q = _crossing_pose(ret)
+    q20 = ret.solve(ret._tips(q), q)  # pylint: disable=protected-access
+    q_sol = np.asarray(ret._q20_to_active(q20))  # pylint: disable=protected-access
+    min_mm = ret._pair_distances(q_sol).min() * 1000  # pylint: disable=protected-access
+    assert min_mm < 10.0  # still interpenetrating without the pass
+
+
+def test_separation_leaves_benign_poses_unchanged():
+    # open hand and the natural pinch must not be touched: their adjacent
+    # checkpoints already clear the threshold (>= 26 mm measured)
+    ret = _reset_retargeter()
+    q_open = np.zeros(ret.hand.n_active)
+    np.testing.assert_array_equal(ret._separate_fingers(q_open), q_open)  # pylint: disable=protected-access
+    q_pinch = np.zeros(ret.hand.n_active)
+    index_s, _ = ret.hand.chain_slices["index"]
+    thumb_s, _ = ret.hand.chain_slices["thumb"]
+    q_pinch[index_s] = np.radians(70.0)
+    q_pinch[index_s + 2] = np.radians(70.0)
+    q_pinch[thumb_s] = np.radians(40.0)
+    q_pinch[thumb_s + 3] = np.radians(70.0)
+    assert ret._pair_distances(q_pinch).min() >= ret.collision_threshold_m  # pylint: disable=protected-access
+    np.testing.assert_array_equal(  # pylint: disable=protected-access
+        ret._separate_fingers(q_pinch), q_pinch)  # pylint: disable=protected-access
+
+
+def test_separation_only_moves_lateral_dofs():
+    # the pass opens the fan (joint_2 only): the human's flexion must
+    # stay exactly as solved
+    ret = _reset_retargeter()
+    q = _crossing_pose(ret)
+    q20 = ret.solve(ret._tips(q), q)  # pylint: disable=protected-access
+    q_sol = np.asarray(ret._q20_to_active(q20))  # pylint: disable=protected-access
+    q_ref = np.asarray(ret._q20_to_active(  # pylint: disable=protected-access
+        ret._to_urdf_degrees(q)))  # pylint: disable=protected-access
+    lateral_slots = [1, 4, 7, 10]
+    flex_slots = [i for i in range(16) if i not in lateral_slots]
+    np.testing.assert_allclose(q_sol[flex_slots], q_ref[flex_slots], atol=1e-9)
+    assert not np.allclose(q_sol[lateral_slots], q_ref[lateral_slots])
