@@ -632,7 +632,7 @@ class HybridRetargeter(_TipSpaceRetargeter):
         self._pip_weights = np.array([2.0, 1.0, 1.0, 1.0, 0.0])
         prior_config = {
             "mcp_flexion": 0.01, "lateral": 0.05, "distal": 0.01,
-            "thumb_flexion": 0.01,
+            "thumb_flexion": 0.05,
             **(prior_weights or {})}
         self._prior_weights = self._make_prior_weights(prior_config)
         # Guided-gesture calibration takes precedence when present;
