@@ -949,9 +949,11 @@ class DirectAngleScaling:
         # (opposition/spread, j3) follows the measured thumb abduction --
         # the leap path subtracts its neutral resting offset upstream, so
         # only the spread/tuck motion around neutral drives the joint.
+        # The measured positive = spreading AWAY from the palm, while the
+        # robot's +j3 adducts TOWARD it (FK-measured): negate.
         q[0] = flexion[0, 0]
         q[1] = flexion[0, 1]
-        q[2] = abduction[0] * ABDUCTION_SCALE
+        q[2] = -abduction[0] * ABDUCTION_SCALE
         q[3] = flexion[0, 2]
         # Fingers: rows 1-4, cols [MCP, PIP, DIP].
         for row, finger_offset in enumerate(range(4, 20, 4)):

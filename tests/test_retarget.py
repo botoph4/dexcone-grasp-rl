@@ -105,4 +105,4 @@ def test_thumb_abduction_maps_to_j3():
     abduction = np.zeros(5)
     abduction[0] = 30.0  # the thumb spreads 30 deg
     q = DirectAngleScaling().retarget(_angles(flexion, abduction))
-    assert q[2] == 30.0 * ABDUCTION_SCALE
+    assert q[2] == -30.0 * ABDUCTION_SCALE  # spread -> negative (robot +j3 adducts)
