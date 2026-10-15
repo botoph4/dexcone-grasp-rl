@@ -239,3 +239,20 @@ def test_direct_angles_palm_away_guard_zeroes_flexion():
         _V(0.0, 0.28, 0.02), _V(0.0, 0.28, 0.04)])
     angles = direct_angles_from_hand(hand, palm_guard=True)
     assert angles.flexion[1, 1] == 0.0
+
+
+def test_thumb_drives_two_flexion_dofs():
+    # regression: the thumb must move BOTH its flexion joints (MP and
+    # IP) when it bends; the anatomical MCP angle reads ~0 with the
+    # desk-mounted leap, so both follow the distal bone bend (FFH-style)
+    from p24grasp.teleop.leap import direct_angles_from_hand
+
+    hand = _straight_leap_hand()
+    # bend the thumb's distal part: bones[2] -> bones[3] angled
+    hand.digits[0] = _digit([
+        _V(0.02, 0.20, 0.0), _V(0.02, 0.24, 0.0), _V(0.02, 0.26, 0.0),
+        _V(0.02, 0.28, 0.0), _V(0.03, 0.30, 0.0)])
+    angles = direct_angles_from_hand(hand)
+    assert angles.flexion[0, 1] > 20.0  # the robot MP follows the bend
+    assert angles.flexion[0, 2] > 20.0  # the robot IP follows the bend
+    np.testing.assert_allclose(angles.flexion[0, 1], angles.flexion[0, 2])

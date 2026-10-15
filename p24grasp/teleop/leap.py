@@ -169,8 +169,9 @@ def direct_angles_from_hand(hand, palm_guard: bool = False) -> HandAngles:
                 PIP = angle(proximal, middle)           [prox vs middle]
                 DIP = angle(middle, distal)             [middle vs distal]
       thumb:    CMC = the metacarpal's elevation above the palm plane
-                MP  = angle(metacarpal, proximal)
-                IP  = angle(middle, distal)             [their FbDir]
+                MP/IP = the distal bone bend (both flexion DOFs follow
+                it, FFH-style; the anatomical MCP angle is included
+                via max)                          [their FbDir/Distal]
       abduction: the in-palm-plane signed angle between the metacarpal
                 and the proximal phalanx (calFingerAdduction: both
                 directions are projected onto the palm plane first).
@@ -222,8 +223,17 @@ def direct_angles_from_hand(hand, palm_guard: bool = False) -> HandAngles:
         if digit_index == 0:  # thumb
             if meta_dir is not None:
                 flexion[0, 0] = max(0.0, 90.0 - _angle_deg(meta_dir, normal))
-            flexion[0, 1] = _angle_deg(meta_dir, prox_dir)
-            flexion[0, 2] = _angle_deg(middle_dir, distal_dir)
+            # The thumb drives TWO flexion DOFs on the robot (MP and
+            # IP).  Per the FFH reference (calPubFingerAngle: "let's
+            # send the same value to all joints, as it is the most
+            # evident angle from testing"), both follow the distal bone
+            # bend; the anatomical MCP angle (metacarpal vs proximal)
+            # reads ~0 with the desk-mounted leap, so it is included via
+            # max() -- a thumb folding only at the MCP still moves the
+            # robot's MP.
+            distal_bend = _angle_deg(middle_dir, distal_dir)
+            flexion[0, 1] = max(_angle_deg(meta_dir, prox_dir), distal_bend)
+            flexion[0, 2] = distal_bend
             if palm_guard:
                 if prox_dir is not None and np.dot(prox_dir, normal) < 0:
                     flexion[0, 1] = 0.0
