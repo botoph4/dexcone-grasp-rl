@@ -377,3 +377,20 @@ Calinon JIST 2015 (GMR/TP-GMM 教程) · Santello 1998(姿态协同)
 SmoothNet (arXiv:2112.13715) · TUM 滤波/预测量化(Monado 论文) ·
 Peng et al. Sensors 2026(1€ vs EMA + 骨长约束,mdpi.com/1424-8220/26/12/3730) ·
 PIP-DIP 耦合量化(frontiersin.org/fnbot.2026.1775834)
+
+## 10. Leap Motion(Gemini)后端调研与实测(2026-10)
+
+**方案**:Ultraleap Gemini 追踪服务输出 26 骨骼手模型,骨骼端点即关节位置,
+27 关节骨架可直接映射 MediaPipe 式 21 关键点;官方 `leapc-python-bindings`
+(不在 PyPI,源码安装)。平台:Windows / Linux x64 / **Linux ARM**(部署板
+py3.8-3.11 预编译)/ Darwin(新版 Python 需自编译 leapc_cffi)。
+
+**实测关键结论(与 MediaPipe 线差异最大的地方)**:
+- LeapC 坐标是**毫米**(管线用米,转换须 /1000);
+- **拇指没有掌骨**(bones[0] 零长度),关节/角度须整体移位一格;
+- 客户端必须 `subscribe_events(device)`,否则服务推帧但 nHands=0;
+- macOS 上 Ultraleap App 托管追踪服务,**App 必须保持运行**;
+- 掌心保护的假设是头戴式安装,桌面安装下会把所有屈曲清零(默认关闭);
+- 拇指侧摆需要启动中性偏移(静止展开角→0),机器人 +j3 是内收、映射取负;
+- 拇指 4 关节对指尖目标欠定:需屈曲先验(0.05)+ MP 下界钳 0 + PIP 残差
+  权重 0,否则求解器把 MP 压到 −20 过伸。
