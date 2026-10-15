@@ -352,7 +352,7 @@ class LeapDetector:
                 pipeline falls back to the keypoint-derived angles.
         """
         self._direct_angles = direct_angles
-        self._thumb_neutral = _ThumbAbductionNeutral()
+        self._thumb_neutral = _ThumbAbductionNeutral(warmup_frames=120)
         try:
             import leap  # noqa: E402
         except ImportError as exc:
