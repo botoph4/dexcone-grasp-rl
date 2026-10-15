@@ -335,13 +335,15 @@ class _TipSpaceRetargeter:
             observed = float(np.median(np.linalg.norm(rel, axis=1)))
             # Spike rejection: one glitched frame (e.g. wrist depth-lifted
             # onto the background) inflates every tip vector uniformly and
-            # the median cannot reject it.  The running max decays
-            # glacially (x0.999/frame), so absorbing the spike would keep
-            # the scale clipped at its lower bound -- a persistent fist.
-            # Only plausible reaches within the human band and within a
-            # 1.6x extension step of the current estimate are accepted.
+            # the median cannot reject it.  The running max NEVER decays:
+            # a decay (x0.999/frame) shrank the estimate from the
+            # calibrated 168 mm to 127 mm during a ~7 s closed-hand hold,
+            # inflating the scale to 1.76 and pushing the thumb target
+            # beyond the robot's reach (MP hyperextension).  Only
+            # plausible reaches within the human band and within a 1.6x
+            # extension step of the current estimate are accepted.
             if 0.06 <= observed <= 0.30 and observed <= self._human_reach * 1.6:
-                self._human_reach = max(self._human_reach * 0.999, observed)
+                self._human_reach = max(self._human_reach, observed)
             return float(np.clip(self._robot_reach / self._human_reach, 0.8, 1.8))
         return self.scale
 
