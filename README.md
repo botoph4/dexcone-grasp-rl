@@ -87,6 +87,18 @@ RealSense D405 / Orbbec Gemini 305 相机装在手腕靠近掌心处，识别手
 坑与结论）见 [docs/TELEOP_IMPLEMENTATION.md](docs/TELEOP_IMPLEMENTATION.md)
 与 [docs/HAND_TELEOP_RESEARCH.md](docs/HAND_TELEOP_RESEARCH.md)。
 
+**Leap Motion Controller 2（Gemini）后端**：`--camera leap` 直接使用
+Ultraleap 26 骨骼手模型（骨骼端点即关节位置）做 FFH 式直接关节角映射，
+四指 MCP/PIP/DIP + 拇指 CMC/MP/IP/指根侧摆全部驱动。前提：安装 Gemini
+追踪服务与 `leapc-python-bindings`（源码），**Ultraleap App 保持运行**，
+macOS 弹窗用 `mjpython` 运行：
+
+```bash
+mjpython scripts/teleop_camera.py --camera leap --mujoco-view --no-lateral
+# 拇指屈曲放大 --thumb-gain（默认 1.5）；--leap-angles direct|keypoints
+# Leap 标定独立存储：--camera leap --calibrate
+```
+
 ```bash
 pip install -e ".[teleop]"          # mediapipe（相机 SDK 按平台安装，见文档）
 
