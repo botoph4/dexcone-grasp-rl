@@ -666,7 +666,8 @@ class HybridRetargeter(_TipSpaceRetargeter):
             print(f"[retarget] loaded hand calibration "
                   f"(lateral offsets "
                   f"{np.round(self._hand_calibration.lateral.offsets_deg, 1).tolist()}, "
-                  f"reach {self._hand_calibration.reach_m * 1000:.0f} mm)",
+                  f"reach {self._hand_calibration.reach_m * 1000:.0f} mm, "
+                  f"thumb gain x{self.thumb_gain})",
                   flush=True)
         else:
             self._lateral = LateralEstimator(
