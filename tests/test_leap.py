@@ -74,19 +74,19 @@ def test_keypoints_from_hand_maps_bones_to_21_keypoints():
     keypoints = keypoints_from_hand(_Hand())
     assert keypoints.shape == (21, 3)
     # wrist from the arm bone, converted (x, -y, -z)
-    np.testing.assert_allclose(keypoints[0], (0.0, -0.20, 0.0))
+    np.testing.assert_allclose(keypoints[0], (0.0, -0.0002, 0.0))
     # thumb: CMC/MP/IP/TIP
-    np.testing.assert_allclose(keypoints[1], (0.03, -0.20, -0.02))
-    np.testing.assert_allclose(keypoints[2], (0.03, -0.23, 0.0))
-    np.testing.assert_allclose(keypoints[3], (0.04, -0.26, 0.0))
-    np.testing.assert_allclose(keypoints[4], (0.05, -0.30, 0.0))
+    np.testing.assert_allclose(keypoints[1], (0.00003, -0.0002, -0.00002))
+    np.testing.assert_allclose(keypoints[2], (0.00003, -0.00023, 0.0))
+    np.testing.assert_allclose(keypoints[3], (0.00004, -0.00026, 0.0))
+    np.testing.assert_allclose(keypoints[4], (0.00005, -0.0003, 0.0))
     # index: MCP/PIP/DIP/TIP (metacarpal next -> proximal next -> ...)
-    np.testing.assert_allclose(keypoints[5], (0.0, -0.24, 0.0))
-    np.testing.assert_allclose(keypoints[6], (0.0, -0.28, 0.0))
-    np.testing.assert_allclose(keypoints[7], (0.0, -0.31, 0.0))
-    np.testing.assert_allclose(keypoints[8], (0.0, -0.34, 0.0))
+    np.testing.assert_allclose(keypoints[5], (0.0, -0.00024, 0.0))
+    np.testing.assert_allclose(keypoints[6], (0.0, -0.00028, 0.0))
+    np.testing.assert_allclose(keypoints[7], (0.0, -0.00031, 0.0))
+    np.testing.assert_allclose(keypoints[8], (0.0, -0.00034, 0.0))
     # the little finger's MCP
-    np.testing.assert_allclose(keypoints[17], (-0.03, -0.22, 0.0))
+    np.testing.assert_allclose(keypoints[17], (-0.00003, -0.00022, 0.0))
 
 
 class _FakeConnection:
@@ -157,7 +157,7 @@ def test_detector_converts_tracking_events():
     detection = detector.detect(None)
     assert detection.presence == 1.0
     assert detection.handedness == "Right"
-    np.testing.assert_allclose(detection.keypoints3d[8], (0.0, -0.34, 0.0))
+    np.testing.assert_allclose(detection.keypoints3d[8], (0.0, -0.00034, 0.0))
     # the tracking mode was set to desktop
     assert connection.mode == "desktop"
     detector.close()

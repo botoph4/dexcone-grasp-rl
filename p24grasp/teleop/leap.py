@@ -68,12 +68,13 @@ _DIGIT_KEYPOINT_RANGES = ((1, 5), (5, 9), (9, 13), (13, 17), (17, 21))
 
 
 def _vector3(value) -> Optional[np.ndarray]:
-    """Vector-like (x, y, z) -> camera-frame (x, -y, -z); None when the
-    value is unavailable.  Accepts objects exposing .x/.y/.z."""
+    """Vector-like (x, y, z) -> camera-frame (x, -y, -z) in METERS; None
+    when the value is unavailable.  The LeapC API reports all positions
+    in MILLIMETERS; the rest of the pipeline works in meters."""
     if value is None:
         return None
     try:
-        return np.array([value.x, -value.y, -value.z], dtype=np.float64)
+        return np.array([value.x, -value.y, -value.z], dtype=np.float64) / 1000.0
     except AttributeError:
         return None
 
