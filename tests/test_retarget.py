@@ -81,7 +81,6 @@ def test_thumb_baseline_mapping():
     assert q[1] == 50.0 * 1.5
     assert q[3] == 80.0  # 60 x 1.5 = 90, clamped to the URDF limit
     assert q[2] == 0.0  # CMC abduction neutral in the baseline
-    assert q[3] == 60.0
 
 
 def test_coupled_distal_is_half_total_minus_zero_compensation():
