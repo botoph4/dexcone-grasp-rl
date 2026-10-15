@@ -619,6 +619,11 @@ class HybridRetargeter(_TipSpaceRetargeter):
         self._lateral_j2 = np.array([5, 9, 13, 17])  # URDF joint_2 slots
         self._weights = np.array(
             [2.0, 1.0, 1.0, 1.0, 2.0])  # index..thumb chain order (pinch side)
+        # the thumb's PIP constraint CONFLICTS with its tip target (the
+        # robot thumb cannot satisfy both, and the solver hyperextends
+        # the MP to its lower bound chasing the PIP) -- zero it; the
+        # four fingers keep their proximal constraints
+        self._pip_weights = np.array([2.0, 1.0, 1.0, 1.0, 0.0])
         prior_config = {
             "mcp_flexion": 0.01, "lateral": 0.05, "distal": 0.01,
             "thumb_flexion": 0.01,
@@ -747,7 +752,7 @@ class HybridRetargeter(_TipSpaceRetargeter):
             # Vector10's proximal half: constrain the middle joints so the
             # fingertips alone cannot be satisfied by odd postures
             residuals.append(
-                self.pip_weight * self._weights[:, None]
+                self.pip_weight * self._pip_weights[:, None]
                 * (pip_targets - self._pip_positions(q16)))
         index_tip = tips[self._chain_names.index("index")]
         thumb_tip = tips[self._chain_names.index("thumb")]

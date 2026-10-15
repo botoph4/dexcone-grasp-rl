@@ -38,6 +38,11 @@ from p24grasp.teleop.lateral import (
 )
 
 DEFAULT_PATH = Path.home() / ".cache" / "p24grasp" / "hand_calibration.json"
+# The leap direct angles measure ~0 at the open hand (adjacent-bone
+# directions), so the offsets captured on the RGB-D camera path do not
+# transfer -- the leap backend keeps its own calibration file.
+DEFAULT_LEAP_PATH = Path.home() / ".cache" / "p24grasp" \
+    / "hand_calibration_leap.json"
 
 # Robot-side flexion ROM (deg) per joint class, from the P24 URDF.
 ROBOT_MCP_ROM = 80.0

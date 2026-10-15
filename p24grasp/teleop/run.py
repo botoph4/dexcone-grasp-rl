@@ -243,6 +243,13 @@ def camera_main(argv: list[str] | None = None) -> int:
         detector = LeapDetector(direct_angles=args.leap_angles == "direct")
         source = LeapSource(detector, width=args.width or 640, height=args.height)
         width = source.width
+        if args.calibration is None:
+            # the RGB-D calibration offsets do not transfer to the leap's
+            # direct angles (open hand measures ~0 there); keep a
+            # separate per-source calibration file
+            from p24grasp.teleop.calibration import DEFAULT_LEAP_PATH
+
+            args.calibration = DEFAULT_LEAP_PATH
     else:
         width = args.width if args.width else (848 if args.camera == "orbbec" else 640)
         source = make_camera_source(args.camera, width, args.height, args.fps,
