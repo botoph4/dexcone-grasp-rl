@@ -125,14 +125,20 @@ def keypoints_from_hand(hand) -> np.ndarray:
         joints = {
             "meta_prev": _vector3(_call_or_attr(metacarpal, "prev_joint")),
             "meta_next": _vector3(_call_or_attr(metacarpal, "next_joint")),
+            "prox_prev": _vector3(_call_or_attr(proximal, "prev_joint")),
             "prox_next": _vector3(_call_or_attr(proximal, "next_joint")),
             "int_next": _vector3(_call_or_attr(intermediate, "next_joint")),
             "dist_next": _vector3(_call_or_attr(distal, "next_joint")),
         }
-        if digit_index == 0:  # thumb: CMC, MP, IP, TIP
-            keypoints[first] = joints["meta_prev"]
-            keypoints[first + 1] = joints["meta_next"]
-            keypoints[first + 2] = joints["prox_next"]
+        if digit_index == 0:
+            # the thumb has NO metacarpal bone (bones[0] is zero-length
+            # in the Gemini model), so its joints come from the
+            # proximal/middle/distal bones shifted by one:
+            # CMC = proximal.prev, MP = proximal.next, IP = middle.next,
+            # TIP = distal.next
+            keypoints[first] = joints["prox_prev"]
+            keypoints[first + 1] = joints["prox_next"]
+            keypoints[first + 2] = joints["int_next"]
             keypoints[first + 3] = joints["dist_next"]
         else:  # fingers: MCP, PIP, DIP, TIP
             keypoints[first] = joints["meta_next"]
@@ -221,30 +227,35 @@ def direct_angles_from_hand(hand, palm_guard: bool = False) -> HandAngles:
         middle_dir = direction(middle)
         distal_dir = direction(distal)
         if digit_index == 0:  # thumb
-            if meta_dir is not None:
-                flexion[0, 0] = max(0.0, 90.0 - _angle_deg(meta_dir, normal))
+            # The thumb has NO metacarpal bone (bones[0] is zero-length
+            # in the Gemini model), so its rays are the proximal
+            # (CMC->MP), middle (MP->IP), and distal (IP->TIP) bones.
+            thumb_meta = direction(proximal)
+            thumb_middle = direction(middle)
+            thumb_distal = direction(distal)
+            if thumb_meta is not None:
+                flexion[0, 0] = max(0.0, 90.0 - _angle_deg(thumb_meta, normal))
             # The thumb drives TWO flexion DOFs on the robot (MP and
             # IP).  Per the FFH reference (calPubFingerAngle: "let's
             # send the same value to all joints, as it is the most
             # evident angle from testing"), both follow the distal bone
-            # bend; the anatomical MCP angle (metacarpal vs proximal)
-            # reads ~0 with the desk-mounted leap, so it is included via
-            # max() -- a thumb folding only at the MCP still moves the
-            # robot's MP.
-            distal_bend = _angle_deg(middle_dir, distal_dir)
-            flexion[0, 1] = max(_angle_deg(meta_dir, prox_dir), distal_bend)
+            # bend; the anatomical MP angle (CMC->MP vs MP->IP) is
+            # included via max() so a thumb folding only at the MP
+            # still moves the robot's MP.
+            distal_bend = _angle_deg(thumb_middle, thumb_distal)
+            flexion[0, 1] = max(_angle_deg(thumb_meta, thumb_middle), distal_bend)
             flexion[0, 2] = distal_bend
             if palm_guard:
-                if prox_dir is not None and np.dot(prox_dir, normal) < 0:
+                if thumb_middle is not None and np.dot(thumb_middle, normal) < 0:
                     flexion[0, 1] = 0.0
-                if distal_dir is not None and np.dot(distal_dir, normal) < 0:
+                if thumb_distal is not None and np.dot(thumb_distal, normal) < 0:
                     flexion[0, 2] = 0.0
-            # thumb abduction: the metacarpal's in-plane angle vs the
+            # thumb abduction: the CMC->MP ray's in-plane angle vs the
             # palm direction (wrist -> middle MCP)
             palm_dir = _unit(keypoints[9] - keypoints[0]) \
                 if np.isfinite(keypoints[9]).all() else None
-            if meta_dir is not None and palm_dir is not None:
-                meta_in = _unit(meta_dir - np.dot(meta_dir, normal) * normal)
+            if thumb_meta is not None and palm_dir is not None:
+                meta_in = _unit(thumb_meta - np.dot(thumb_meta, normal) * normal)
                 palm_in = _unit(palm_dir - np.dot(palm_dir, normal) * normal)
                 if meta_in is not None and palm_in is not None:
                     sign = np.sign(np.dot(normal, np.cross(palm_in, meta_in)))

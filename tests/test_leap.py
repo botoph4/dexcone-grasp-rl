@@ -76,9 +76,9 @@ def test_keypoints_from_hand_maps_bones_to_21_keypoints():
     # wrist from the arm bone, converted (x, -y, -z)
     np.testing.assert_allclose(keypoints[0], (0.0, -0.0002, 0.0))
     # thumb: CMC/MP/IP/TIP
-    np.testing.assert_allclose(keypoints[1], (0.00003, -0.0002, -0.00002))
-    np.testing.assert_allclose(keypoints[2], (0.00003, -0.00023, 0.0))
-    np.testing.assert_allclose(keypoints[3], (0.00004, -0.00026, 0.0))
+    np.testing.assert_allclose(keypoints[1], (0.00003, -0.00023, 0.0))
+    np.testing.assert_allclose(keypoints[2], (0.00004, -0.00026, 0.0))
+    np.testing.assert_allclose(keypoints[3], (0.00005, -0.00028, 0.0))
     np.testing.assert_allclose(keypoints[4], (0.00005, -0.0003, 0.0))
     # index: MCP/PIP/DIP/TIP (metacarpal next -> proximal next -> ...)
     np.testing.assert_allclose(keypoints[5], (0.0, -0.00024, 0.0))
