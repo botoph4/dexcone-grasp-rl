@@ -12,6 +12,7 @@ from p24grasp.teleop.retarget import (  # noqa: E402
     P24_LIMITS,
     THUMB_FLEX_SCALE,
     DirectAngleScaling,
+    ABDUCTION_SCALE,
 )
 
 
@@ -97,3 +98,11 @@ def test_nan_angles_map_to_zero():
     angles = _angles(np.full((5, 3), np.nan))
     q = DirectAngleScaling().retarget(angles)
     np.testing.assert_allclose(q, 0.0, atol=1e-9)
+
+
+def test_thumb_abduction_maps_to_j3():
+    flexion = np.zeros((5, 3))
+    abduction = np.zeros(5)
+    abduction[0] = 30.0  # the thumb spreads 30 deg
+    q = DirectAngleScaling().retarget(_angles(flexion, abduction))
+    assert q[2] == 30.0 * ABDUCTION_SCALE

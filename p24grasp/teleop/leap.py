@@ -272,6 +272,38 @@ def direct_angles_from_hand(hand, palm_guard: bool = False) -> HandAngles:
                       presence=1.0)
 
 
+class _ThumbAbductionNeutral:
+    """The thumb's resting spread maps to zero robot opposition: the
+    startup frames (the user holds the hand open) calibrate the neutral
+    offset, and only the spread/tuck motion around it drives the robot's
+    joint_3."""
+
+    def __init__(self, warmup_frames: int = 60) -> None:
+        self._buffer: list[float] = []
+        self._warmup = warmup_frames
+        self.offset = 0.0
+        self._done = False
+
+    def update(self, value_deg: float) -> float:
+        """Return the offset-corrected thumb abduction (deg).
+
+        Args:
+            value_deg: the raw in-plane thumb abduction (deg).
+
+        Returns:
+            0.0 while collecting the neutral frames, then
+            ``value_deg - offset``.
+        """
+        if not self._done:
+            self._buffer.append(value_deg)
+            if len(self._buffer) < self._warmup:
+                return 0.0
+            self.offset = float(np.median(self._buffer))
+            self._done = True
+            return 0.0  # the completing frame stays neutral too
+        return value_deg - self.offset
+
+
 class _LeapState:
     """Shared between the source (waits for events) and the detector
     (converts the latest hand); the Gemini listener runs on the
@@ -309,6 +341,7 @@ class LeapDetector:
                 pipeline falls back to the keypoint-derived angles.
         """
         self._direct_angles = direct_angles
+        self._thumb_neutral = _ThumbAbductionNeutral()
         try:
             import leap  # noqa: E402
         except ImportError as exc:
@@ -433,7 +466,11 @@ class LeapDetector:
         if self._direct_angles:
             # the leap's own joint angles (adjacent-bone directions,
             # FFH-style) override the keypoint-derived ones downstream
-            detection.hand_angles = direct_angles_from_hand(hand)
+            angles = direct_angles_from_hand(hand)
+            # the thumb's resting spread maps to zero robot opposition
+            angles.abduction[0] = self._thumb_neutral.update(
+                float(np.degrees(angles.abduction[0])))
+            detection.hand_angles = angles
         return detection
 
     def close(self) -> None:

@@ -256,3 +256,30 @@ def test_thumb_drives_two_flexion_dofs():
     assert angles.flexion[0, 1] > 20.0  # the robot MP follows the bend
     assert angles.flexion[0, 2] > 20.0  # the robot IP follows the bend
     np.testing.assert_allclose(angles.flexion[0, 1], angles.flexion[0, 2])
+
+
+def test_thumb_abduction_neutral_offset():
+    from p24grasp.teleop.leap import _ThumbAbductionNeutral
+
+    neutral = _ThumbAbductionNeutral(warmup_frames=3)
+    # during warmup: neutral output regardless of the resting spread
+    assert neutral.update(35.0) == 0.0
+    assert neutral.update(37.0) == 0.0
+    assert neutral.update(33.0) == 0.0
+    # after warmup: the resting median (35) becomes the offset
+    assert neutral.update(35.0) == 0.0
+    assert neutral.update(50.0) == 15.0  # spread -> positive
+    assert neutral.update(25.0) == -10.0  # tuck -> negative
+
+
+def test_direct_angles_measure_thumb_abduction():
+    from p24grasp.teleop.leap import direct_angles_from_hand
+
+    hand = _straight_leap_hand()
+    # spread the thumb metacarpal in x (the in-plane angle vs the palm
+    # direction grows)
+    hand.digits[0] = _digit([
+        _V(0.02, 0.20, 0.0), _V(0.05, 0.24, 0.0), _V(0.06, 0.26, 0.0),
+        _V(0.06, 0.28, 0.0), _V(0.06, 0.30, 0.0)])
+    angles = direct_angles_from_hand(hand)
+    assert abs(angles.abduction[0]) > 5.0

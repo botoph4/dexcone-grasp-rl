@@ -638,7 +638,7 @@ class HybridRetargeter(_TipSpaceRetargeter):
         self._pip_weights = np.array([2.0, 1.0, 1.0, 1.0, 0.0])
         prior_config = {
             "mcp_flexion": 0.01, "lateral": 0.05, "distal": 0.01,
-            "thumb_flexion": 0.05,
+            "thumb_flexion": 0.05, "thumb_abduction": 0.05,
             **(prior_weights or {})}
         self._prior_weights = self._make_prior_weights(prior_config)
         # Guided-gesture calibration takes precedence when present;
@@ -705,9 +705,11 @@ class HybridRetargeter(_TipSpaceRetargeter):
                     # targets underdetermine the 4-DOF chain and the
                     # unconstrained solver drives the MP hyperextended
                     # (measured -20 deg on the leap path); the
-                    # opposition DOF (joint_3) stays free for the pinch
+                    # opposition DOF (joint_3) gets the same small
+                    # prior toward the measured thumb abduction, with
+                    # the pinch free to refine it
                     if joint.endswith("_joint_3"):
-                        weights[start + offset] = 0.0
+                        weights[start + offset] = config["thumb_abduction"]
                     else:
                         weights[start + offset] = config["thumb_flexion"]
                 elif joint.endswith("_joint_1"):
@@ -943,10 +945,13 @@ class DirectAngleScaling:
         flexion = self._calibrated(raw)
         abduction = np.nan_to_num(angles.abduction, nan=0.0)
         q = np.zeros(20)
-        # Thumb: three unsigned bends -> j1, j2, j4; j3 neutral (the hybrid
-        # optimizer covers thumb abduction/opposition from the tip targets).
+        # Thumb: three unsigned bends -> j1, j2, j4; the base abduction
+        # (opposition/spread, j3) follows the measured thumb abduction --
+        # the leap path subtracts its neutral resting offset upstream, so
+        # only the spread/tuck motion around neutral drives the joint.
         q[0] = flexion[0, 0]
         q[1] = flexion[0, 1]
+        q[2] = abduction[0] * ABDUCTION_SCALE
         q[3] = flexion[0, 2]
         # Fingers: rows 1-4, cols [MCP, PIP, DIP].
         for row, finger_offset in enumerate(range(4, 20, 4)):
