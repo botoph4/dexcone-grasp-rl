@@ -95,7 +95,9 @@ def make_retargeter(kind: str, hand_calibration_path=None, lateral_enabled=True,
     if kind == "dex":
         from p24grasp.teleop.retarget import DexRetargetingAdapter  # noqa: E402
 
-        return DexRetargetingAdapter()
+        return DexRetargetingAdapter(hand_calibration_path=hand_calibration_path,
+                                     lateral_enabled=lateral_enabled,
+                                     thumb_gain=thumb_gain)
     raise ValueError(f"unknown retargeter: {kind}")
 
 

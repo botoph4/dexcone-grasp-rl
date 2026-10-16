@@ -270,3 +270,12 @@ class GeoRtRetargeter:
         q16 = np.clip(q16, teacher._lb, teacher._ub)  # pylint: disable=protected-access
         self._q20_prev = teacher._to_urdf_degrees(q16)  # pylint: disable=protected-access
         return self._q20_prev.copy()
+
+    def reset(self) -> None:
+        """First-startup state (the pipeline calls this when the hand
+        leaves the view): clears the held command and the hybrid
+        fallback's warm start, so the exit recovery returns the open
+        palm and the next entry starts fresh (the same recovery as the
+        hybrid retargeter)."""
+        self._q20_prev = np.zeros(20)
+        self._fallback.reset()

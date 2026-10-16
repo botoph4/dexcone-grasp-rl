@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 pytest.importorskip("dex_retargeting")
 pytest.importorskip("pinocchio")
 
+from p24grasp.teleop.angles import HandAngles  # noqa: E402
 from p24grasp.teleop.retarget import DexRetargetingAdapter, P24_LIMITS  # noqa: E402
 
 
@@ -43,8 +44,19 @@ def _straight_keypoints() -> np.ndarray:
     return kp
 
 
+def _make_adapter(**kwargs) -> DexRetargetingAdapter:
+    """Adapter with isolated calibration paths (the default path would
+    pick up the machine's real calibration file)."""
+    import tempfile
+
+    tmp = Path(tempfile.mkdtemp())
+    return DexRetargetingAdapter(hand_calibration_path=tmp / "hand.json",
+                                 lateral_calibration_path=tmp / "lateral.json",
+                                 **kwargs)
+
+
 def test_adapter_constructs_and_retargets():
-    adapter = DexRetargetingAdapter()
+    adapter = _make_adapter()
     q20 = adapter.retarget(None, keypoints3d=_straight_keypoints())
     assert q20.shape == (20,)
     assert np.all(np.isfinite(q20))
@@ -63,7 +75,7 @@ def test_flexed_hand_drives_the_fingers():
     # and returned the zero pose, and the straight-hand-only test could not
     # tell the difference (zeros are also a valid open hand).  A curled
     # hand must produce real flexion.
-    adapter = DexRetargetingAdapter()
+    adapter = _make_adapter()
     kp = _straight_keypoints()
     # curl the four fingers: the tips pull back toward the palm (short
     # wrist-relative vectors along the fingers)
@@ -79,6 +91,48 @@ def test_flexed_hand_drives_the_fingers():
 
 
 def test_adapter_holds_on_missing_keypoints():
-    adapter = DexRetargetingAdapter()
+    adapter = _make_adapter()
     out = adapter.retarget(None, keypoints3d=np.full((21, 3), np.nan))
     np.testing.assert_allclose(out, np.zeros(20))
+
+
+def _angles(thumb_ip: float = 0.0) -> HandAngles:
+    flexion = np.zeros((5, 3))
+    flexion[0, 2] = thumb_ip
+    return HandAngles(flexion=flexion, abduction=np.zeros(5),
+                      flexion_vis=np.ones((5, 3)), abduction_vis=np.ones(5),
+                      presence=1.0)
+
+
+def test_thumb_mp_follows_the_joint_mapping():
+    # the vector objective only sees the thumb tip, never the second
+    # phalanx -- the adapter must override the thumb MP (URDF slot 3)
+    # with the calibrated joint mapping (default thumb gain 1.5)
+    adapter = _make_adapter()
+    q20 = adapter.retarget(_angles(thumb_ip=40.0),
+                           keypoints3d=_straight_keypoints())
+    np.testing.assert_allclose(q20[3], 40.0 * 1.5, atol=1e-6)
+
+
+def test_laterals_override_to_neutral_when_disabled():
+    # the pure vector objective drives the fan laterals into their
+    # limits; with lateral_enabled=False the adapter must hold them at
+    # neutral like the hybrid does
+    adapter = _make_adapter(lateral_enabled=False)
+    q20 = adapter.retarget(_angles(), keypoints3d=_straight_keypoints())
+    np.testing.assert_allclose(q20[[5, 9, 13, 17]], 0.0, atol=1e-9)
+
+
+def test_reset_restores_the_open_palm_hold():
+    # the pipeline calls reset() when the hand leaves the view: the
+    # hold must return the open palm and the package state must start
+    # fresh (the same recovery as the hybrid retargeter)
+    adapter = _make_adapter()
+    q20 = adapter.retarget(_angles(thumb_ip=40.0),
+                           keypoints3d=_straight_keypoints())
+    assert np.abs(q20).max() > 1.0  # a non-open pose was held
+    adapter.reset()
+    out = adapter.retarget(_angles(thumb_ip=40.0),
+                           keypoints3d=np.full((21, 3), np.nan))
+    np.testing.assert_allclose(out, np.zeros(20))
+    np.testing.assert_allclose(adapter._seq.last_qpos, 0.0)  # pylint: disable=protected-access

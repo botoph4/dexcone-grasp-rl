@@ -579,6 +579,97 @@ class FingertipRetargeter(_TipSpaceRetargeter):
         return self.solve(targets)
 
 
+class JointMappingPrior:
+    """Calibrated analytical joint mapping (the hybrid's q0 anchor).
+
+    DirectAngleScaling on the human angles with the guided calibration,
+    with the four joint_2 values overridden by the calibrated lateral
+    estimator -- the single source of truth for the fan (a raw
+    tip-vector objective misuses joint_2 most often, and a wrong
+    per-user offset collapses the middle fingers together).  Shared by
+    the hybrid retargeter and the dex adapter so the angle-driven DOFs
+    agree across backends.
+
+    Args:
+        hand: :class:`HandModel` (chain slices for the 16-DOF layout).
+        hand_calibration_path: guided-gesture calibration file (None:
+            default gains, no offsets).
+        lateral_calibration_path: persisted lateral offsets.
+        lateral_enabled: False holds the four joint_2 values at neutral.
+        thumb_gain: thumb flexion amplification (default 1.5).
+    """
+
+    def __init__(self, hand, hand_calibration_path=None,
+                 lateral_calibration_path=None, lateral_enabled: bool = True,
+                 thumb_gain: float = 1.5):
+        from p24grasp.teleop.calibration import (  # noqa: E402
+            load_hand_calibration,
+        )
+
+        self.hand = hand
+        self.lateral_enabled = lateral_enabled
+        self.thumb_gain = thumb_gain
+        # Guided-gesture calibration takes precedence when present;
+        # otherwise the startup auto-calibration learns the user's neutral
+        # lateral spread from ~1 s of open-hand frames (and stays neutral
+        # until then -- wrong offsets collapse the middle fingers together).
+        self.calibration = load_hand_calibration(
+            hand_calibration_path if hand_calibration_path is not None
+            else None)
+        if self.calibration is not None:
+            self.lateral = LateralEstimator(
+                calibration=self.calibration.lateral,
+                calibration_path=lateral_calibration_path)
+            print(f"[retarget] loaded hand calibration "
+                  f"(lateral offsets "
+                  f"{np.round(self.calibration.lateral.offsets_deg, 1).tolist()}, "
+                  f"reach {self.calibration.reach_m * 1000:.0f} mm, "
+                  f"thumb gain x{self.thumb_gain})",
+                  flush=True)
+        else:
+            self.lateral = LateralEstimator(
+                auto_calibrate=True, calibration_path=lateral_calibration_path)
+
+    def update(self, angles: HandAngles,
+               keypoints3d: np.ndarray | None = None) -> np.ndarray:
+        """The (16,) joint-mapping prior q0 (active order, rad) for the
+        current frame.
+
+        The four joint_2 values come from the calibrated lateral
+        estimator (neutral while it auto-calibrates, and neutral
+        forever with ``lateral_enabled=False``).
+
+        Args:
+            angles: filtered human :class:`HandAngles`.
+            keypoints3d: (21, 3) camera-frame keypoints feeding the
+                lateral estimator.
+
+        Returns:
+            (16,) active-DOF angles (rad).
+        """
+        q0 = scaling_q16(self.hand, angles, self.calibration,
+                         thumb_gain=self.thumb_gain)
+        if self.lateral_enabled:
+            # Shared calibrated lateral: always write the estimator's robot
+            # joint_2 values into the prior (it holds its calibrated initial
+            # value without observations), so the no-hand fallback also starts
+            # at the user's neutral spread instead of zero.
+            lateral_qpos, _ = self.lateral.update(keypoints3d)
+            for name in ("index", "little", "middle", "ring"):
+                start, _ = self.hand.chain_slices[name]
+                q0[start + 1] = lateral_qpos[LATERAL_FINGER_NAMES.index(name)]
+        else:
+            # lateral disabled: hold the four joint_2 DOFs at neutral
+            for name in ("index", "little", "middle", "ring"):
+                start, _ = self.hand.chain_slices[name]
+                q0[start + 1] = 0.0
+        return q0
+
+    def reset(self) -> None:
+        """Restart the lateral estimator back to its startup value."""
+        self.lateral.reset()
+
+
 class HybridRetargeter(_TipSpaceRetargeter):
     """Joint-angle mapping base + fingertip/pinch refinement (default).
 
@@ -654,37 +745,19 @@ class HybridRetargeter(_TipSpaceRetargeter):
             "thumb_flexion": 0.05, "thumb_abduction": 0.05,
             **(prior_weights or {})}
         self._prior_weights = self._make_prior_weights(prior_config)
-        # Guided-gesture calibration takes precedence when present;
-        # otherwise the startup auto-calibration learns the user's neutral
-        # lateral spread from ~1 s of open-hand frames (and stays neutral
-        # until then -- wrong offsets collapse the middle fingers together).
-        from p24grasp.teleop.calibration import (  # noqa: E402
-            load_hand_calibration,
-        )
-
-        self._hand_calibration = load_hand_calibration(
-            hand_calibration_path if hand_calibration_path is not None
-            else None)
-        if self._hand_calibration is not None:
-            self._lateral = LateralEstimator(
-                calibration=self._hand_calibration.lateral,
-                calibration_path=lateral_calibration_path)
-            if self.scale is None:
-                # seed the adaptive reach with the calibrated open-hand size
-                if np.isfinite(self._hand_calibration.reach_m):
-                    self._human_reach = self._hand_calibration.reach_m
-                else:
-                    print("[retarget] 警告: 标定文件中的伸展半径非有限值,"
-                          "使用默认值;建议重新运行 --calibrate", flush=True)
-            print(f"[retarget] loaded hand calibration "
-                  f"(lateral offsets "
-                  f"{np.round(self._hand_calibration.lateral.offsets_deg, 1).tolist()}, "
-                  f"reach {self._hand_calibration.reach_m * 1000:.0f} mm, "
-                  f"thumb gain x{self.thumb_gain})",
-                  flush=True)
-        else:
-            self._lateral = LateralEstimator(
-                auto_calibrate=True, calibration_path=lateral_calibration_path)
+        # the calibrated joint-mapping anchor: DirectAngleScaling q0 with
+        # the four joint_2 values from the calibrated lateral estimator
+        # (shared with the dex adapter -- see JointMappingPrior)
+        self._prior = JointMappingPrior(
+            self.hand, hand_calibration_path, lateral_calibration_path,
+            lateral_enabled, thumb_gain)
+        if self._prior.calibration is not None and self.scale is None:
+            # seed the adaptive reach with the calibrated open-hand size
+            if np.isfinite(self._prior.calibration.reach_m):
+                self._human_reach = self._prior.calibration.reach_m
+            else:
+                print("[retarget] 警告: 标定文件中的伸展半径非有限值,"
+                      "使用默认值;建议重新运行 --calibrate", flush=True)
         # a reset() returns the reach estimate to this startup value (the
         # calibrated open-hand reach when the calibration was loaded)
         self._human_reach_init = float(self._human_reach)
@@ -693,7 +766,7 @@ class HybridRetargeter(_TipSpaceRetargeter):
         """Reset the mapping state for a fresh start (see the base class);
         also restarts the lateral estimator back to its startup value."""
         super().reset()
-        self._lateral.reset()
+        self._prior.reset()
 
     def _make_prior_weights(self, config: dict) -> np.ndarray:
         """Per-DOF prior weights over the 16 active DOFs (rad scale).
@@ -1009,22 +1082,7 @@ class HybridRetargeter(_TipSpaceRetargeter):
         Returns:
             (20,) URDF-order joint command in degrees.
         """
-        q0 = scaling_q16(self.hand, angles, self._hand_calibration,
-                         thumb_gain=self.thumb_gain)
-        if self.lateral_enabled:
-            # Shared calibrated lateral: always write the estimator's robot
-            # joint_2 values into the prior (it holds its calibrated initial
-            # value without observations), so the no-hand fallback also starts
-            # at the user's neutral spread instead of zero.
-            lateral_qpos, _ = self._lateral.update(keypoints3d)
-            for name in ("index", "little", "middle", "ring"):
-                start, _ = self.hand.chain_slices[name]
-                q0[start + 1] = lateral_qpos[LATERAL_FINGER_NAMES.index(name)]
-        else:
-            # lateral disabled: hold the four joint_2 DOFs at neutral
-            for name in ("index", "little", "middle", "ring"):
-                start, _ = self.hand.chain_slices[name]
-                q0[start + 1] = 0.0
+        q0 = self._prior.update(angles, keypoints3d)
         targets = self.targets_from_keypoints(keypoints3d)
         if targets is None:
             # keypoints lost (hand out of view / depth lifting failed): HOLD
@@ -1160,11 +1218,25 @@ class DexRetargetingAdapter:
     same optimization natively on the repo kinematics).
     """
 
-    def __init__(self, scaling: float = 1.4, low_pass_alpha: float = 0.5):
+    def __init__(self, scaling: float = 1.4, low_pass_alpha: float = 0.5, *,
+                 hand_calibration_path=None,
+                 lateral_calibration_path=None,
+                 lateral_enabled: bool = True,
+                 thumb_gain: float = 1.5):
         from dex_retargeting.retargeting_config import (  # noqa: E402
             RetargetingConfig,
         )
+        from p24grasp.model.urdf import HandModel  # noqa: E402
         from p24grasp.paths import urdf_path  # noqa: E402
+
+        self._hand = HandModel(str(urdf_path()))
+        # the calibrated joint-mapping anchor (shared with the hybrid):
+        # the pure vector objective cannot see the second thumb phalanx
+        # (4 DOFs, 3 tip/pinch vectors) and misuses the fan laterals, so
+        # those DOFs are overridden from it after every solve
+        self._prior = JointMappingPrior(
+            self._hand, hand_calibration_path, lateral_calibration_path,
+            lateral_enabled, thumb_gain)
 
         config = RetargetingConfig.from_dict({
             "type": "vector",
@@ -1238,8 +1310,34 @@ class DexRetargetingAdapter:
         # the mimic adaptor can push a joint a hair past its URDF bound
         q20 = np.clip(np.degrees(qpos[self._order]),
                       P24_LIMITS[:, 0], P24_LIMITS[:, 1])
+        if angles is not None:
+            # override the DOFs the pure vector objective gets wrong with
+            # the calibrated joint mapping (the hybrid's single source of
+            # truth): the thumb MP (the vectors only see the thumb tip,
+            # never the second phalanx) and the four fan laterals (the
+            # robot fan geometry + the uniform scaling drive them into
+            # their limits)
+            q0 = self._prior.update(angles, keypoints3d)
+            thumb_mp = self._hand.chain_slices["thumb"][0] + 3
+            q20[3] = np.degrees(q0[thumb_mp])
+            for name in ("index", "little", "middle", "ring"):
+                start, _ = self._hand.chain_slices[name]
+                q20[URDF_OFFSETS[name] + 1] = np.degrees(q0[start + 1])
         self._q20_prev = q20
         return q20
+
+    def reset(self) -> None:
+        """First-startup state (the pipeline calls this when the hand
+        leaves the view): the hold returns the open palm and the next
+        entry re-runs the first-startup logic -- fresh warm start,
+        package filter, and lateral auto-calibration (the same recovery
+        as the hybrid retargeter)."""
+        self._q20_prev = np.zeros(20)
+        self._seq.last_qpos = np.zeros(len(self._seq.last_qpos))
+        self._seq.is_warm_started = False
+        if self._seq.filter is not None:
+            self._seq.filter.reset()
+        self._prior.reset()
 
 
 class GeoRtAdapter:
