@@ -134,6 +134,11 @@ class TeleopPipeline:
                 reset = getattr(self.retargeter, "reset", None)
                 if reset is not None:
                     reset()
+                # the model-based hand fitter is stateful too: drop its
+                # pose warm start (the bone lengths survive)
+                reset = getattr(self.detector, "reset", None)
+                if reset is not None:
+                    reset()
         else:
             self._in_absence = False
         command = self.retargeter.retarget(filtered.angles, detection.keypoints3d)

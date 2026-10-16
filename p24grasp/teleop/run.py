@@ -138,7 +138,8 @@ CSV_HEADER = ["ts", "state", "thumb_cmc", "thumb_mp", "index_mcp", "index_pip",
 def _run(source, args: argparse.Namespace, csv_row,
          detector=None) -> int:
     if detector is None:
-        detector = HandDetector(model_path=args.model)
+        detector = HandDetector(model_path=args.model,
+                               hand_fit=not args.no_mano_fit)
     # the leap wrist comes from the arm bone (farther than the wrist-
     # mounted camera's, no depth glitches): skip the wrist sanity bound
     wrist_sanity_m = None if getattr(args, "camera", None) == "leap" else 0.10
@@ -209,6 +210,11 @@ def camera_main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-lateral", action="store_true",
                         help="disable the lateral (ab/adduction) mapping: the "
                              "four joint_2 DOFs stay at neutral zero")
+    parser.add_argument("--no-mano-fit", action="store_true",
+                        help="disable the model-based hand fitting on the "
+                             "RGB-D path (MANO-topology skeleton fit to the "
+                             "2D keypoints + depth; kills the finger jitter "
+                             "from per-point depth noise)")
     parser.add_argument("--calibration", default=None,
                         help="hand calibration file (default: "
                              "~/.cache/p24grasp/hand_calibration.json); "
@@ -276,7 +282,8 @@ def camera_main(argv: list[str] | None = None) -> int:
         )
 
         if detector is None:
-            detector = HandDetector(model_path=args.model)
+            detector = HandDetector(model_path=args.model,
+                                    hand_fit=not args.no_mano_fit)
         try:
             GuidedCalibration(source, detector,
                               path=args.calibration or DEFAULT_PATH).run()
@@ -303,7 +310,8 @@ def camera_main(argv: list[str] | None = None) -> int:
                                      wrist_sanity_m=wrist_sanity_m,
                                      thumb_gain=args.thumb_gain)
         if detector is None:
-            detector = HandDetector(model_path=args.model)
+            detector = HandDetector(model_path=args.model,
+                                    hand_fit=not args.no_mano_fit)
         try:
             if args.mujoco_view and not args.local:
                 run_mujoco_viewer(source, detector, retargeter=retargeter)

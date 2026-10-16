@@ -91,7 +91,9 @@ class HandDetector:
                  min_detection_confidence: float = 0.5,
                  min_tracking_confidence: float = 0.5,
                  min_presence_confidence: float = 0.5,
-                 depth_median_window: int = 3):
+                 depth_median_window: int = 3,
+                 hand_fit: bool = True,
+                 fit_calib_frames: int = 30):
         """Create the detector (the MediaPipe landmarker initializes lazily
         on the first :meth:`detect` call).
 
@@ -104,6 +106,11 @@ class HandDetector:
                 min_presence_confidence: MediaPipe landmarker thresholds.
             depth_median_window: median-filter window size (px) used to
                 sample depth under each keypoint.
+            hand_fit: run the model-based hand fitter (MANO-topology
+                skeleton) over the lifted keypoints -- bone-rigid, time-
+                smooth 3D instead of per-point depth samples.
+            fit_calib_frames: lifted frames collected to auto-calibrate
+                the fitter's per-user bone lengths.
         """
         self.model_path = ensure_model(model_path)
         self.num_hands = num_hands
@@ -111,6 +118,12 @@ class HandDetector:
         self.min_tracking_confidence = min_tracking_confidence
         self.min_presence_confidence = min_presence_confidence
         self.depth_median_window = depth_median_window
+        if hand_fit:
+            from p24grasp.teleop.mano_fit import ManoHandFitter  # noqa: E402
+
+            self._fitter = ManoHandFitter(calib_frames=fit_calib_frames)
+        else:
+            self._fitter = None
         self._landmarker = None
         self._last_ts_ms = -1
 
@@ -179,6 +192,15 @@ class HandDetector:
         handedness = result.handedness[0][0].category_name if result.handedness else None
 
         keypoints3d = self._lift(frame, u, v)
+        if self._fitter is not None:
+            # model-based refinement: fit the bone-rigid hand skeleton to
+            # the 2D keypoints + a soft depth agreement (falls back to
+            # the raw lifting while the bone lengths calibrate or when
+            # the fit is rejected)
+            keypoints3d = self._fitter.fit(u, v, keypoints3d,
+                                           fx=frame.fx, fy=frame.fy,
+                                           cx=frame.cx, cy=frame.cy,
+                                           ts=frame.ts)
         return HandDetection(keypoints3d=keypoints3d, visibility=vis,
                              presence=1.0, handedness=handedness)
 
@@ -212,6 +234,14 @@ class HandDetector:
             pts[i, 1] = (vi[i] - frame.cy) * z / frame.fy
             pts[i, 2] = z
         return pts
+
+    def reset(self) -> None:
+        """Reset the fitting state when the hand leaves the view (the
+        pipeline calls this on absence entry): the pose warm start drops,
+        the auto-calibrated bone lengths survive (the hand has not
+        changed)."""
+        if self._fitter is not None:
+            self._fitter.reset_pose()
 
     def close(self) -> None:
         """Release the MediaPipe landmarker (safe to call repeatedly)."""
