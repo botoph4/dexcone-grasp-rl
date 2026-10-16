@@ -1189,11 +1189,11 @@ class DexRetargetingAdapter:
         # dof_joint_names excludes zero-DOF dummy joints (e.g. 'universe')
         joint_names = list(self._seq.optimizer.robot.dof_joint_names)
         self._order = np.array([joint_names.index(name) for name in P24_JOINT_NAMES])
-        # camera frame (x right, y down, z forward) -> palm frame
-        # (x along fingers, y across the palm, z up)
-        self._mount_rot = np.array([[0.0, 0.0, 1.0],
-                                    [1.0, 0.0, 0.0],
-                                    [0.0, -1.0, 0.0]])
+        # the 7 human vector pairs: (origin, task) keypoint indices,
+        # 5x (wrist -> fingertip) + 2x (thumb tip -> index/middle tip),
+        # matching target_origin/task_link_names above
+        self._origin_ids = np.array([0, 0, 0, 0, 0, 4, 4])
+        self._task_ids = np.array([8, 12, 16, 20, 4, 8, 12])
         self._q20_prev = np.zeros(20)
         self._tip_ids = np.array([4, 8, 12, 16, 20])
 
@@ -1201,6 +1201,14 @@ class DexRetargetingAdapter:
                  keypoints3d: np.ndarray | None = None) -> np.ndarray:
         """One dex-retargeting optimization step: human tip vectors ->
         20-joint URDF command (deg).
+
+        The optimizer consumes the 7 human vectors (wrist -> fingertips,
+        thumb tip -> index/middle tips), NOT the raw keypoints -- it
+        subtracts them from the robot's FK vectors directly.  The
+        vectors are expressed in the robot base frame via the same
+        per-frame palm fit + target rotation as the hybrid retargeter
+        (fingers +z); the config's scaling_factor (1.4) covers the
+        hand-size difference.
 
         Args:
             angles: filtered human :class:`HandAngles` (unused; the
@@ -1212,15 +1220,24 @@ class DexRetargetingAdapter:
             (20,) URDF-order joint command in degrees (mimic applied by
             the package's MimicJointKinematicAdaptor).
         """
-        needed = np.concatenate([[0], self._tip_ids])
+        # frame inputs (wrist / middle MCP / thumb CMC) are as critical
+        # as the tips: without them the palm-frame fit is garbage and
+        # the vectors would twist the robot hand
+        needed = [0, 9, 1, *self._tip_ids]
         if keypoints3d is None or not np.isfinite(keypoints3d[needed]).all():
             return self._q20_prev.copy()
+        frame = fit_palm_frame(keypoints3d)  # camera -> palm rotation
         wrist = keypoints3d[0]
-        ref = keypoints3d - wrist  # wrist frame, camera orientation
-        ref = (self._mount_rot @ ref.T).T  # palm-frame orientation
+        palm = (frame @ (keypoints3d - wrist).T).T  # fingers +x, thumb +y
+        human_vecs = palm[self._task_ids] - palm[self._origin_ids]
+        # palm frame (fingers +x) -> robot base frame (fingers +z):
+        # the same rotation the hybrid retargeter applies to its targets
+        human_vecs = human_vecs @ _TipSpaceRetargeter._TARGET_ROTATION.T  # pylint: disable=protected-access
         fixed = np.zeros(len(self._seq.optimizer.idx_pin2fixed))
-        qpos = self._seq.retarget(ref, fixed_qpos=fixed)  # (dof,) rad, mimic applied
-        q20 = np.degrees(qpos[self._order])
+        qpos = self._seq.retarget(human_vecs, fixed_qpos=fixed)  # (dof,) rad
+        # the mimic adaptor can push a joint a hair past its URDF bound
+        q20 = np.clip(np.degrees(qpos[self._order]),
+                      P24_LIMITS[:, 0], P24_LIMITS[:, 1])
         self._q20_prev = q20
         return q20
 
