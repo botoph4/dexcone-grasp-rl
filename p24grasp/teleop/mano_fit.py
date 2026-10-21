@@ -77,6 +77,26 @@ ABD_JOINTS = (1, 5, 9, 13, 17)
 N_PARAMS = 6 + len(FLEX_JOINTS) + len(ABD_JOINTS)  # rot + trans + angles
 _FLEX_SLOT = {joint: 6 + i for i, joint in enumerate(FLEX_JOINTS)}
 _ABD_SLOT = {joint: 6 + len(FLEX_JOINTS) + i for i, joint in enumerate(ABD_JOINTS)}
+# the joint each angle parameter rotates (flexion params first, then
+# abduction), matching the parameter layout
+_ANGLE_PARAM_JOINTS = FLEX_JOINTS + ABD_JOINTS
+N_ANGLES = len(_ANGLE_PARAM_JOINTS)
+
+def _ancestors(joint: int) -> set[int]:
+    """The joint and all its ancestors (for the subtree construction)."""
+    chain = {joint}
+    parent = PARENTS[joint]
+    while parent >= 0:
+        chain.add(int(parent))
+        parent = PARENTS[int(parent)]
+    return chain
+
+
+# tree-order descendant lists per joint (for the angle-derivative chains);
+# every parent index is below its children, so range order is tree order
+_SUBTREES: tuple[tuple[int, ...], ...] = tuple(
+    tuple(j for j in range(1, N_JOINTS) if k in _ancestors(j))
+    for k in range(N_JOINTS))
 
 # DIP ~ 0.7 * PIP coupling hint (per-finger pairs, weak)
 _COUPLE_PAIRS = ((7, 6), (11, 10), (15, 14), (19, 18))
@@ -99,6 +119,37 @@ def _rot_z(theta: float) -> np.ndarray:
     """3x3 rotation around the palm-frame z axis (the abduction axis)."""
     c, s = np.cos(theta), np.sin(theta)
     return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+
+
+def _d_rot_y(theta: float) -> np.ndarray:
+    """d/dtheta of :func:`_rot_y`."""
+    c, s = np.cos(theta), np.sin(theta)
+    return np.array([[-s, 0.0, c], [0.0, 0.0, 0.0], [-c, 0.0, -s]])
+
+
+def _d_rot_z(theta: float) -> np.ndarray:
+    """d/dtheta of :func:`_rot_z`."""
+    c, s = np.cos(theta), np.sin(theta)
+    return np.array([[-s, -c, 0.0], [c, -s, 0.0], [0.0, 0.0, 0.0]])
+
+
+def _skew(v: np.ndarray) -> np.ndarray:
+    """3x3 cross-product matrix of ``v``."""
+    return np.array([[0.0, -v[2], v[1]], [v[2], 0.0, -v[0]], [-v[1], v[0], 0.0]])
+
+
+def _so3_left_jac(rotvec: np.ndarray) -> np.ndarray:
+    """Left jacobian of SO(3) at ``rotvec`` (the Exp(.) derivative).
+
+    J = I + (1-cos th)/th^2 [w]_x + (th - sin th)/th^3 [w]_x^2, with
+    th = ||w|| and the small-angle limit I.
+    """
+    theta = float(np.linalg.norm(rotvec))
+    if theta < 1e-9:
+        return np.eye(3)
+    a = _skew(rotvec) / theta
+    return (np.eye(3) + (1.0 - np.cos(theta)) / theta * a
+            + (theta - np.sin(theta)) / theta * (a @ a))
 
 
 class ManoHandFitter:
@@ -190,6 +241,107 @@ class ManoHandFitter:
             world[joint] = world[parent] @ local
             pos[joint] = pos[parent] + world[parent] @ self._offsets[joint]
         return pos
+
+    def _fk_with_derivs(self, params: np.ndarray):
+        """Forward pass plus the position jacobians for the residual.
+
+        Returns:
+            (pos, dpos_drot, dpos_dangle): the (21, 3) camera-frame
+            positions, their (21, 3, 3) jacobian wrt the palm rotation
+            (axis-angle columns), and their (21, 3, N_ANGLES) jacobian
+            wrt the joint angles.  The translation jacobian is the
+            identity for every joint (assembled by the caller).
+        """
+        rot = Rotation.from_rotvec(params[0:3]).as_matrix()
+        trans = params[3:6]
+        world = np.empty((N_JOINTS, 3, 3))
+        pos = np.empty((N_JOINTS, 3))
+        local = np.empty((N_JOINTS, 3, 3))
+        world[0] = rot
+        pos[0] = trans
+        local[0] = np.eye(3)
+        for joint in range(1, N_JOINTS):
+            parent = PARENTS[joint]
+            rl = np.eye(3)
+            if joint in _ABD_SLOT:
+                rl = rl @ _rot_z(params[_ABD_SLOT[joint]])
+            if joint in _FLEX_SLOT:
+                rl = rl @ _rot_y(params[_FLEX_SLOT[joint]])
+            local[joint] = rl
+            world[joint] = world[parent] @ rl
+            pos[joint] = pos[parent] + world[parent] @ self._offsets[joint]
+        # rotation columns: d(R0)/d rot_k = R0 [J_r e_k]_x (Rodrigues;
+        # J_r is the right jacobian = the transpose of J_l)
+        j_l = _so3_left_jac(params[0:3])
+        d_world_rot = np.zeros((N_JOINTS, 3, 3, 3))
+        d_pos_rot = np.zeros((N_JOINTS, 3, 3))
+        for k in range(3):
+            d_world_rot[0, :, :, k] = rot @ _skew(j_l[k, :])
+        for joint in range(1, N_JOINTS):
+            parent = PARENTS[joint]
+            d_world_rot[joint] = np.einsum("abk,bc->ack",
+                                           d_world_rot[parent], local[joint])
+            d_pos_rot[joint] = d_pos_rot[parent] + np.einsum(
+                "abk,b->ak", d_world_rot[parent], self._offsets[joint])
+        # angle columns: a joint angle moves its own frame (and every
+        # frame below it), never the joint position itself -- the pivot
+        d_world_ang = np.zeros((N_JOINTS, 3, 3, N_ANGLES))
+        d_pos_ang = np.zeros((N_JOINTS, 3, N_ANGLES))
+        for k, joint in enumerate(_ANGLE_PARAM_JOINTS):
+            parent = PARENTS[joint]
+            if k < len(FLEX_JOINTS):
+                d_local = _d_rot_y(params[6 + k])
+                if joint in _ABD_SLOT:
+                    d_local = _rot_z(params[_ABD_SLOT[joint]]) @ d_local
+            else:
+                d_local = _d_rot_z(params[6 + k])
+                d_local = d_local @ _rot_y(params[_FLEX_SLOT[joint]])
+            d_world_ang[joint, :, :, k] = world[parent] @ d_local
+            for desc in _SUBTREES[joint]:
+                if desc == joint:
+                    continue  # the base case above, not the recursion
+                p = PARENTS[desc]
+                d_world_ang[desc, :, :, k] = (d_world_ang[p, :, :, k]
+                                              @ local[desc])
+                d_pos_ang[desc, :, k] = d_pos_ang[p, :, k] + \
+                    d_world_ang[p, :, :, k] @ self._offsets[desc]
+        return pos, d_pos_rot, d_pos_ang
+
+    def _jacobian(self, params: np.ndarray, u_px: np.ndarray,
+                  v_px: np.ndarray, z_ref: np.ndarray, *,
+                  fx: float, fy: float, cx: float, cy: float,
+                  dt: float) -> np.ndarray:
+        """(93, 26) analytic jacobian of :meth:`_residuals` (the residual
+        order matches exactly; the scipy default finite differences cost
+        27 residual evaluations per jacobian -- far too slow per frame).
+        """
+        pos, d_pos_rot, d_pos_ang = self._fk_with_derivs(params)
+        jac = np.zeros((42 + N_JOINTS + N_PARAMS + len(_COUPLE_PAIRS),
+                        N_PARAMS))
+        for joint in range(N_JOINTS):
+            x, y, z = pos[joint]
+            du = np.array([fx / z, 0.0, -fx * x / (z * z)])
+            dv = np.array([0.0, fy / z, -fy * y / (z * z)])
+            row_u = 2 * joint
+            row_v = 2 * joint + 1
+            jac[row_u, 0:3] = du @ d_pos_rot[joint]
+            jac[row_u, 3:6] = du
+            jac[row_u, 6:26] = du @ d_pos_ang[joint]
+            jac[row_v, 0:3] = dv @ d_pos_rot[joint]
+            jac[row_v, 3:6] = dv
+            jac[row_v, 6:26] = dv @ d_pos_ang[joint]
+            row_z = 42 + joint
+            jac[row_z, 0:3] = self.depth_weight * d_pos_rot[joint, 2, :]
+            jac[row_z, 3:6] = np.array([0.0, 0.0, self.depth_weight])
+            jac[row_z, 6:26] = self.depth_weight * d_pos_ang[joint, 2, :]
+        if self._prev is not None and dt > 0:
+            jac[42 + N_JOINTS:42 + N_JOINTS + N_PARAMS,
+                0:N_PARAMS] = np.eye(N_PARAMS) * (self.smooth_weight / dt)
+        for m, (dip, pip) in enumerate(_COUPLE_PAIRS):
+            row = 42 + N_JOINTS + N_PARAMS + m
+            jac[row, _FLEX_SLOT[dip]] = _COUPLE_WEIGHT
+            jac[row, _FLEX_SLOT[pip]] = -0.7 * _COUPLE_WEIGHT
+        return jac
 
     # ------------------------------------------------------------------ #
     # bone-length calibration
@@ -290,12 +442,17 @@ class ManoHandFitter:
                 self._depth_ref)
         x0 = self._prev.copy() if self._prev is not None \
             else self._initial_params(lifted)
+        # a degenerate cold start (e.g. a zero-depth wrist sample) can
+        # sit outside the bounds -- clip it in rather than letting
+        # least_squares raise
+        x0 = np.clip(x0, self._lb, self._ub)
         result = least_squares(
             self._residuals, x0,
             args=(u_px, v_px, self._depth_ref),
             kwargs={"fx": fx, "fy": fy, "cx": cx, "cy": cy, "dt": dt},
+            jac=self._jacobian,
             bounds=(self._lb, self._ub), method="dogbox",
-            jac="2-point", max_nfev=60)
+            max_nfev=60)
         pos = self._fk(result.x)
         err = float(np.mean(np.hypot(
             fx * pos[:, 0] / pos[:, 2] + cx - u_px,

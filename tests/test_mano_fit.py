@@ -122,6 +122,33 @@ def test_bone_lengths_auto_calibrate_to_the_user_hand():
     assert abs(reach - expected) < 0.02 * expected
 
 
+def test_jacobian_matches_finite_differences():
+    # the analytic jacobian replaces scipy's 2-point scheme (27 residual
+    # evals per jacobian -- far too slow per frame); pin it against
+    # central differences on a random pose
+    fitter = ManoHandFitter(calib_frames=0)
+    rng = np.random.default_rng(3)
+    params = np.zeros(N_PARAMS)
+    params[0:3] = rng.normal(0, 0.5, 3)
+    params[3:6] = np.array([0.02, -0.01, 0.30])
+    params[6:] = rng.normal(0, 0.4, 20)
+    u = rng.uniform(100, 500, 21)
+    v = rng.uniform(50, 400, 21)
+    zref = np.full(21, 0.3)
+    kwargs = {"fx": 600.0, "fy": 600.0, "cx": 320.0, "cy": 240.0, "dt": 0.033}
+    jac = fitter._jacobian(params, u, v, zref, **kwargs)  # pylint: disable=protected-access
+    step = 1e-7
+    fd = np.zeros_like(jac)
+    for k in range(N_PARAMS):
+        pp = params.copy()
+        pp[k] += step
+        pm = params.copy()
+        pm[k] -= step
+        fd[:, k] = (fitter._residuals(pp, u, v, zref, **kwargs)  # pylint: disable=protected-access
+                    - fitter._residuals(pm, u, v, zref, **kwargs)) / (2 * step)  # pylint: disable=protected-access
+    assert np.abs(jac - fd).max() < 1e-6
+
+
 def test_reset_pose_keeps_the_calibrated_lengths():
     fitter = ManoHandFitter(calib_frames=0)
     truth = _truth_pose()
