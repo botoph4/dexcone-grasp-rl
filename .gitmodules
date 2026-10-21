@@ -1,0 +1,3 @@
+[submodule "thirdparty/leapc-python-bindings"]
+	path = thirdparty/leapc-python-bindings
+	url = git@github.com:ultraleap/leapc-python-bindings.git

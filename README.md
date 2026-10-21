@@ -3,7 +3,8 @@
 [![CI](https://github.com/botoph4/dexcone-grasp-rl/actions/workflows/ci.yml/badge.svg)](https://github.com/botoph4/dexcone-grasp-rl/actions)
 
 P24 假肢手的 MuJoCo 抓取仿真项目：几何 IK 与 PyRoki 运动学求解、PPO/SAC 抓取
-策略训练、桌面/网页双端交互查看器（可拖拽物体看握持反应）。
+策略训练、桌面/网页双端交互查看器（可拖拽物体看握持反应）、**腕装相机手部
+遥操作**（RealSense D405 / Orbbec Gemini 305 识别手骨骼 → 重定向映射到 P24）。
 
 ## 安装
 
@@ -28,6 +29,9 @@ pip install -e ".[rl,web,test]"  # + RL 训练 / 网页查看器 / 测试
 │   ├── env/                   # RL：obs.py（观测编码）、grasp.py（Gymnasium 环境）
 │   ├── rl/                    # RL：train.py、eval.py
 │   ├── pyroki/                # PyRoki 后端：probe.py（可行性验证）、ik.py（LM IK）
+│   ├── teleop/                # 腕装相机遥操作：camera/detector/angles/lateral/
+│   │                          #   filters/state_machine/retarget/geort/pipeline/
+│   │                          #   viewer/run（见 docs/TELEOP_IMPLEMENTATION.md）
 │   └── viewers/               # desktop.py（mjpython）、web.py（viser 浏览器）
 ├── scripts/                   # 薄启动脚本（兼容 python scripts/xxx.py 用法）
 ├── tests/                     # pytest 冒烟测试
@@ -75,6 +79,56 @@ python scripts/eval_grasp_rl.py --shape cylinder --algo both --episodes 50 --med
 也可以用 console 入口：`p24-viewer`、`p24-web`、`p24-train`、`p24-eval`、
 `p24-pyroki`、`p24-build`。
 
+### 腕装相机手部遥操作
+
+RealSense D405 / Orbbec Gemini 305 相机装在手腕靠近掌心处，识别手骨骼模型
+（MediaPipe 21 关键点 + 深度反投影），提取手指弯曲/侧摆角度，经遮挡状态机
+平滑后重定向映射到 P24 灵巧手。技术细节（手骨骼识别、重定向数学、标定、
+坑与结论）见 [docs/TELEOP_IMPLEMENTATION.md](docs/TELEOP_IMPLEMENTATION.md)
+与 [docs/HAND_TELEOP_RESEARCH.md](docs/HAND_TELEOP_RESEARCH.md)。
+
+**Leap Motion Controller 2（Gemini）后端**：`--camera leap` 直接使用
+Ultraleap 26 骨骼手模型（骨骼端点即关节位置）做 FFH 式直接关节角映射，
+四指 MCP/PIP/DIP + 拇指 CMC/MP/IP/指根侧摆全部驱动。前提：安装 Gemini
+追踪服务与 `leapc-python-bindings`（源码），**Ultraleap App 保持运行**，
+macOS 弹窗用 `mjpython` 运行：
+
+```bash
+mjpython scripts/teleop_camera.py --camera leap --mujoco-view --no-lateral
+# 拇指屈曲放大 --thumb-gain（默认 1.5）；--leap-angles direct|keypoints
+# Leap 标定独立存储：--camera leap --calibrate
+```
+
+```bash
+pip install -e ".[teleop]"          # mediapipe（相机 SDK 按平台安装，见文档）
+
+# 本地 2×2 窗口（相机+关键点 | 深度 / P24 渲染 | 状态）
+sudo python scripts/teleop_camera.py --camera orbbec --local \
+  --model ~/.cache/p24grasp/hand_landmarker.task
+
+# 独立 MuJoCo 交互窗口（可旋转缩放）
+sudo python scripts/teleop_camera.py --camera orbbec --mujoco-view
+
+# 浏览器 MJPEG 页面：http://127.0.0.1:8080
+sudo python scripts/teleop_camera.py --camera orbbec --view
+
+# 无相机开发：录制回放
+python scripts/teleop_camera.py --camera orbbec --record-dir /tmp/rec --record-frames 300
+python scripts/teleop_replay.py --dir /tmp/rec
+```
+
+映射后端（`--retarget`）：`hybrid`（默认，关节映射先验 + 指尖/PIP/捏取优化 +
+自标定坐标系 + 自适应尺度）、`fingertip`（纯指尖优化）、`scaling`（纯关节
+映射）、`geort`（仿真训练的神经映射）、`dex`（dex-retargeting 向量优化）。
+
+> macOS 上 Orbbec 需 sudo（系统 UVC 权限限制）。首次使用建议跑一次引导式
+> 手势标定（并拢/张开/握拳 → 侧摆上下限 + 屈曲行程，结果持久化），
+> 之后启动无需再标定：
+
+```bash
+sudo python scripts/teleop_camera.py --camera orbbec --calibrate
+```
+
 ### 测试
 
 ```bash
@@ -120,6 +174,8 @@ python -m pytest tests/
 | [docs/FINDINGS.md](docs/FINDINGS.md) | 根因分析：轴向、碰撞体、接触位掩码、mimic equality、挤出机理等 10 个结论 |
 | [docs/FRICTION_CONE.md](docs/FRICTION_CONE.md) | 摩擦锥计算公式、多面体近似、防滑抓握求解管线 |
 | [docs/RL.md](docs/RL.md) | RL 的作用：MDP 定义、奖励公式、PPO/SAC 对比、策略在项目中的位置 |
+| [docs/TELEOP_IMPLEMENTATION.md](docs/TELEOP_IMPLEMENTATION.md) | 腕装相机遥操作实现：手骨骼识别、角度提取、遮挡状态机、重定向映射、标定与坑 |
+| [docs/HAND_TELEOP_RESEARCH.md](docs/HAND_TELEOP_RESEARCH.md) | 遥操作调研：SOTA 算法对比、映射方法（GMR/dex-retargeting/GeoRT）、决策记录 |
 
 ## 已知限制
 

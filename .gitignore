@@ -18,3 +18,9 @@ MUJOCO_LOG.TXT
 
 # local tooling config
 .claude/
+
+# OrbbecSDK runtime logs
+Log/
+
+# local dependency clones
+thirdparty/leap_motion_sync_with_ffh/
